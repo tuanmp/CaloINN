@@ -12,8 +12,8 @@
     usage:
         -i --input_file: Name and path of the input file to be evaluated.
         -i2 --input_file2: Name and path for a second input file to be evaluated.
-        -r --reference_file: Name and path of the reference .hdf5 file. A .pkl file will be
-                             created at the same location for faster subsequent evaluations.
+                           This file is currently used only for the histograms and the classifiers.
+        -r --reference_file: Name and path of the reference .hdf5 file.
         -m --mode: Which metric to look at. Choices are
                    'all': does all of the below (with low-level classifier).
                    'avg': plots the average shower of the whole dataset.
@@ -428,9 +428,8 @@ def save_reference(ref_hlf, fname):
         pickle.dump(ref_hlf, file)
     print("Saving file with high-level features DONE.")
 
-def plot_histograms(hlf_class, vae_class, reference_class, arg, p_label):
+def plot_histograms(hlfs, reference_class, arg, p_label):
     """ plots histograms based with reference file as comparison """
-    hlfs = [hlf_class, vae_class]
     if arg.dataset == '1-photons':
         p_label = r'$\gamma$ DS-1'
     elif arg.dataset == '1-pions':
@@ -438,7 +437,6 @@ def plot_histograms(hlf_class, vae_class, reference_class, arg, p_label):
     elif arg.dataset == '2':
         p_label = r'$e^{+}$ DS-2'
     else:
-        hlfs = [None, vae_class]
         p_label = r'$e^{+}$ DS-3'
 
     plot_Etot_Einc(hlfs, reference_class, arg, p_label)
@@ -449,7 +447,7 @@ def plot_histograms(hlf_class, vae_class, reference_class, arg, p_label):
     plot_ECWidthPhis(hlfs, reference_class, arg, p_label)
     plot_sparsity(hlfs, reference_class, arg, p_label)
     if arg.dataset[0] == '1':
-        plot_Etot_Einc_discrete(hlf_class, reference_class, arg, p_label)
+        plot_Etot_Einc_discrete(hlfs[0], reference_class, arg, p_label)
 
 ########## Main ##########
 
@@ -463,11 +461,11 @@ def main(raw_args=None):
     source_file = h5py.File(args.input_file, 'r')
     check_file(source_file, args, which='input')
 
+    list_files = [source_file, ]
     if args.input_file2 != 'none':
         source_file2 = h5py.File(args.input_file2, 'r')
-        check_file(source_file2, args, which='input2')
-    else:
-        source_file2 = source_file
+        list_files.append(source_file2)
+        check_file(source_file2, args, which='input_2')
 
     particle = {'1-photons': 'photon', '1-pions': 'pion',
                 '2': 'electron', '3': 'electron'}[args.dataset]
@@ -476,35 +474,33 @@ def main(raw_args=None):
     args.min_energy = {'1-photons': 1, '1-pions': 1,
                        '2': 0.5e-3/0.033, '3': 0.5e-3/0.033}[args.dataset]
 
-    hlf = HLF.HighLevelFeatures(particle,
+    hlfs = []
+    showers = []
+    energies = []
+
+    for n, file in enumerate(list_files):
+        hlfs.append(HLF.HighLevelFeatures(particle,
                                 filename='binning_dataset_{}.xml'.format(
                                     args.dataset.replace('-', '_')))
-    shower, energy = extract_shower_and_energy(source_file, which='input', single_energy=args.energy)
+                    )
+        shower, energy = extract_shower_and_energy(list_files[n], which='input', single_energy=args.energy)
+        showers.append(shower)
+        energies.append(energy)
 
-    if args.input_file2 != 'none':
-        hlf_2 = HLF.HighLevelFeatures(particle,
-                                filename='binning_dataset_{}.xml'.format(
-                                    args.dataset.replace('-', '_')))
-        shower_2, energy_2 = extract_shower_and_energy(source_file2, which='input_2', single_energy=args.energy)
-    else:
-        hlf_2 = hlf
-        shower_2 = shower
-        energy_2 = energy
-
-    #Checking for negative values, nans and infinities
-    print("Checking for negative values, number of negative energies: ")
-    print("input 1: ", (shower < 0.0).sum(), "input 2: ", (shower_2 < 0.0).sum(), "\n")
-    print("Checking for nans in the generated sample, number of nans: ")
-    print("input 1: ", np.isnan(shower).sum(), "input 2: ", np.isnan(shower_2).sum(), "\n")
-    print("Checking for infs in the generated sample, number of infs: ")
-    print("input 1: ", np.isinf(shower).sum(), "input 2: ", np.isinf(shower_2).sum(), "\n")
-    np.nan_to_num(shower, copy=False, nan=0.0, neginf=0.0, posinf=0.0)
-    np.nan_to_num(shower_2, copy=False, nan=0.0, neginf=0.0, posinf=0.0)
- 
-    # Using a cut everywhere
-    print("Using Everywhere a cut of {}".format(args.cut))
-    shower[shower<args.cut] = 0.0
-    shower_2[shower_2<args.cut] = 0.0
+        #Checking for negative values, nans and infinities
+        print(f"Checking input file {n}")
+        print("Checking for negative values, number of negative energies: ")
+        print(f"input {n}: ", (showers[n] < 0.0).sum(), "\n")
+        print("Checking for nans in the generated sample, number of nans: ")
+        print(f"input {n}: ", np.isnan(showers[n]).sum(), "\n")
+        print("Checking for infs in the generated sample, number of infs: ")
+        print(f"input {n}: ", np.isinf(showers[n]).sum(), "\n")
+        #Avoid numerical errors
+        np.nan_to_num(showers[n], copy=False, nan=0.0, neginf=0.0, posinf=0.0)
+     
+        # Using a cut everywhere
+        print("Using Everywhere a cut of {}".format(args.cut))
+        showers[n][showers[n]<args.cut] = 0.0
 
     # get reference folder and name of file
     args.source_dir, args.reference_file_name = os.path.split(args.reference_file)
@@ -536,11 +532,11 @@ def main(raw_args=None):
     # evaluations:
     if args.mode in ['all', 'no-cls', 'avg']:
         print("Plotting average shower next to reference...")
-        plot_layer_comparison(hlf, shower.mean(axis=0, keepdims=True),
+        plot_layer_comparison(hlfs[0], showers[0].mean(axis=0, keepdims=True),
                               reference_hlf, reference_shower.mean(axis=0, keepdims=True), args)
         print("Plotting average shower next to reference: DONE.\n")
         print("Plotting average shower...")
-        hlf.DrawAverageShower(shower,
+        hlfs[0].DrawAverageShower(showers[0],
                               filename=os.path.join(args.output_dir,
                                                     'average_shower_dataset_{}.pdf'.format(
                                                         args.dataset)),
@@ -551,7 +547,7 @@ def main(raw_args=None):
             reference_hlf.avg_shower = reference_shower.mean(axis=0, keepdims=True)
             #save_reference(reference_hlf,
             #               os.path.join(args.source_dir, args.reference_file_name + '.pkl'))
-        hlf.DrawAverageShower(reference_hlf.avg_shower,
+        hlfs[0].DrawAverageShower(reference_hlf.avg_shower,
                               filename=os.path.join(
                                   args.output_dir,
                                   'reference_average_shower_dataset_{}.pdf'.format(
@@ -560,12 +556,12 @@ def main(raw_args=None):
         print("Plotting average shower: DONE.\n")
 
         print("Plotting randomly selected reference and generated shower: ")
-        hlf.DrawSingleShower(shower[:5], 
+        hlfs[0].DrawSingleShower(showers[0][:5], 
                              filename=os.path.join(args.output_dir,
                                                     'single_shower_dataset_{}.pdf'.format(
                                                             args.dataset)),
                              title="Single shower")
-        hlf.DrawSingleShower(reference_shower[:5], 
+        hlfs[0].DrawSingleShower(reference_shower[:5], 
                              filename=os.path.join(args.output_dir,
                                                     'reference_single_shower_dataset_{}.pdf'.format(
                                                             args.dataset)),
@@ -586,9 +582,9 @@ def main(raw_args=None):
         for i in range(len(target_energies)-1):
             filename = 'average_shower_dataset_{}_E_{}.pdf'.format(args.dataset,
                                                                    target_energies[i])
-            which_showers = ((energy >= target_energies[i]) & \
-                             (energy < target_energies[i+1])).squeeze()
-            hlf.DrawAverageShower(shower[which_showers],
+            which_showers = ((energies[0] >= target_energies[i]) & \
+                             (energies[0] < target_energies[i+1])).squeeze()
+            hlfs[0].DrawAverageShower(showers[0][which_showers],
                                   filename=os.path.join(args.output_dir, filename),
                                   title=plot_title[i])
             if hasattr(reference_hlf, 'avg_shower_E'):
@@ -605,7 +601,7 @@ def main(raw_args=None):
                 #save_reference(reference_hlf,
                 #               os.path.join(args.source_dir, args.reference_file_name + '.pkl'))
 
-            hlf.DrawAverageShower(reference_hlf.avg_shower_E[target_energies[i]],
+            hlfs[0].DrawAverageShower(reference_hlf.avg_shower_E[target_energies[i]],
                                   filename=os.path.join(args.output_dir,
                                                         'reference_'+filename),
                                   title='reference '+plot_title[i])
@@ -614,11 +610,9 @@ def main(raw_args=None):
 
     if args.mode in ['all', 'no-cls', 'hist-p', 'hist-chi', 'hist']:
         print("Calculating high-level features for histograms ...")
-        hlf.CalculateFeatures(shower)
-        hlf.Einc = energy
-
-        hlf_2.CalculateFeatures(shower_2)
-        hlf_2.Einc = energy_2
+        for n, file in enumerate(hlfs):
+            hlfs[n].CalculateFeatures(showers[n])
+            hlfs[n].Einc = energies[n]
 
         if reference_hlf.E_tot is None:
             reference_hlf.CalculateFeatures(reference_shower)
@@ -642,96 +636,96 @@ def main(raw_args=None):
         else:
             p_label = r'$e^{+}$ DS-3'
 
-        plot_histograms(hlf, hlf_2, reference_hlf, args, p_label)
+        plot_histograms(hlfs, reference_hlf, args, p_label)
         if args.dataset == '1-photons' or args.dataset == '1-pions':
-            plot_atlas_style(hlf, hlf_2, reference_hlf, args, p_label)
+            plot_atlas_style(hlfs, reference_hlf, args, p_label)
             
-        list_showers = (shower, shower_2)
-        plot_cell_dist(list_showers, reference_shower, args, p_label)
+        plot_cell_dist(showers, reference_shower, args, p_label)
         print("Plotting histograms: DONE. \n")
 
     if args.mode in ['all', 'cls-low', 'cls-high', 'cls-low-normed']:
-        print("Calculating high-level features for classifier ...")
-        
-        print("Using {} as cut for the showers ...".format(args.cut))
-        # set a cut on low energy voxels !only low level!
-        cut = args.cut
+        for n, file in enumerate(list_files):
+            print(f"Calculating high-level features for classifier for input {n}...")
+            
+            print("Using {} as cut for the showers ...".format(args.cut))
+            # set a cut on low energy voxels !only low level!
+            cut = args.cut
 
-        hlf.CalculateFeatures(shower)
-        hlf.Einc = energy
+            hlfs[n].CalculateFeatures(showers[n])
+            hlfs[n].Einc = energies[n]
 
-        if reference_hlf.E_tot is None:
-            reference_hlf.CalculateFeatures(reference_shower)
-            #save_reference(reference_hlf,
-            #               os.path.join(args.source_dir, args.reference_file_name + '.pkl'))
+            if reference_hlf.E_tot is None:
+                reference_hlf.CalculateFeatures(reference_shower)
+                #save_reference(reference_hlf,
+                #               os.path.join(args.source_dir, args.reference_file_name + '.pkl'))
 
-        print("Calculating high-level features for classifer: DONE.\n")
+            print("Calculating high-level features for classifer: DONE.\n")
 
-        if args.mode in ['all', 'cls-low']:
-            source_array = prepare_low_data_for_classifier(source_file, hlf, 0., cut=cut,
-                                                           normed=False, single_energy=args.energy)
-            reference_array = prepare_low_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
-                                                              normed=False, single_energy=args.energy)
-        elif args.mode in ['cls-low-normed']:
-            source_array = prepare_low_data_for_classifier(source_file, hlf, 0., cut=cut,
-                                                           normed=True, single_energy=args.energy)
-            reference_array = prepare_low_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
-                                                              normed=True, single_energy=args.energy)
-        elif args.mode in ['cls-high']:
-            source_array = prepare_high_data_for_classifier(source_file, hlf, 0., cut=cut, single_energy=args.energy)
-            reference_array = prepare_high_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
-                                                                single_energy=args.energy)
+            if args.mode in ['all', 'cls-low']:
+                source_array = prepare_low_data_for_classifier(list_files[n], hlfs[n], 0., cut=cut,
+                                                               normed=False, single_energy=args.energy)
+                reference_array = prepare_low_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
+                                                                  normed=False, single_energy=args.energy)
+            elif args.mode in ['cls-low-normed']:
+                source_array = prepare_low_data_for_classifier(list_files[n], hlfs[n], 0., cut=cut,
+                                                               normed=True, single_energy=args.energy)
+                reference_array = prepare_low_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
+                                                                  normed=True, single_energy=args.energy)
+            elif args.mode in ['cls-high']:
+                source_array = prepare_high_data_for_classifier(list_files[n], hlfs[n], 0., cut=cut, single_energy=args.energy)
+                reference_array = prepare_high_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
+                                                                    single_energy=args.energy)
 
-        train_data, test_data, val_data = ttv_split(source_array, reference_array)
+            train_data, test_data, val_data = ttv_split(source_array, reference_array)
 
-        # set up device
-        args.device = torch.device('cuda:'+str(args.which_cuda) \
-                                   if torch.cuda.is_available() and not args.no_cuda else 'cpu')
-        print("Using {}".format(args.device))
+            # set up device
+            args.device = torch.device('cuda:'+str(args.which_cuda) \
+                                       if torch.cuda.is_available() and not args.no_cuda else 'cpu')
+            print("Using {}".format(args.device))
 
-        # set up DNN classifier
-        input_dim = train_data.shape[1]-1
-        DNN_kwargs = {'num_layer':args.cls_n_layer,
-                      'num_hidden':args.cls_n_hidden,
-                      'input_dim':input_dim,
-                      'dropout_probability':args.cls_dropout_probability}
-        classifier = DNN(**DNN_kwargs)
-        classifier.to(args.device)
-        print(classifier)
-        total_parameters = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
+            # set up DNN classifier
+            input_dim = train_data.shape[1]-1
+            DNN_kwargs = {'num_layer':args.cls_n_layer,
+                          'num_hidden':args.cls_n_hidden,
+                          'input_dim':input_dim,
+                          'dropout_probability':args.cls_dropout_probability}
+            classifier = DNN(**DNN_kwargs)
+            classifier.to(args.device)
+            print(classifier)
+            total_parameters = sum(p.numel() for p in classifier.parameters() if p.requires_grad)
 
-        print("{} has {} parameters".format(args.mode, int(total_parameters)))
+            print("{} has {} parameters".format(args.mode, int(total_parameters)))
 
-        optimizer = torch.optim.Adam(classifier.parameters(), lr=args.cls_lr)
+            optimizer = torch.optim.Adam(classifier.parameters(), lr=args.cls_lr)
 
-        if args.save_mem:
-            train_data = TensorDataset(torch.tensor(train_data, dtype=torch.get_default_dtype()))
-            test_data = TensorDataset(torch.tensor(test_data, dtype=torch.get_default_dtype()))
-            val_data = TensorDataset(torch.tensor(val_data, dtype=torch.get_default_dtype()))
-        else:
-            train_data = TensorDataset(torch.tensor(train_data, dtype=torch.get_default_dtype()).to(args.device))
-            test_data = TensorDataset(torch.tensor(test_data, dtype=torch.get_default_dtype()).to(args.device))
-            val_data = TensorDataset(torch.tensor(val_data, dtype=torch.get_default_dtype()).to(args.device))
+            if args.save_mem:
+                train_data = TensorDataset(torch.tensor(train_data, dtype=torch.get_default_dtype()))
+                test_data = TensorDataset(torch.tensor(test_data, dtype=torch.get_default_dtype()))
+                val_data = TensorDataset(torch.tensor(val_data, dtype=torch.get_default_dtype()))
+            else:
+                train_data = TensorDataset(torch.tensor(train_data, dtype=torch.get_default_dtype()).to(args.device))
+                test_data = TensorDataset(torch.tensor(test_data, dtype=torch.get_default_dtype()).to(args.device))
+                val_data = TensorDataset(torch.tensor(val_data, dtype=torch.get_default_dtype()).to(args.device))
 
-        train_dataloader = DataLoader(train_data, batch_size=args.cls_batch_size, shuffle=True)
-        test_dataloader = DataLoader(test_data, batch_size=args.cls_batch_size, shuffle=False)
-        val_dataloader = DataLoader(val_data, batch_size=args.cls_batch_size, shuffle=False)
+            train_dataloader = DataLoader(train_data, batch_size=args.cls_batch_size, shuffle=True)
+            test_dataloader = DataLoader(test_data, batch_size=args.cls_batch_size, shuffle=False)
+            val_dataloader = DataLoader(val_data, batch_size=args.cls_batch_size, shuffle=False)
 
-        train_and_evaluate_cls(classifier, train_dataloader, test_dataloader, optimizer, args)
-        classifier = load_classifier(classifier, args)
+            train_and_evaluate_cls(classifier, train_dataloader, test_dataloader, optimizer, args)
+            classifier = load_classifier(classifier, args)
 
-        with torch.no_grad():
-            print("Now looking at independent dataset:")
-            eval_acc, eval_auc, eval_JSD = evaluate_cls(classifier, val_dataloader, args,
-                                                        final_eval=True,
-                                                        calibration_data=test_dataloader)
-        print("Final result of classifier test (AUC / JSD):")
-        print("{:.4f} / {:.4f}".format(eval_auc, eval_JSD))
-        with open(os.path.join(args.output_dir, 'classifier_{}_{}.txt'.format(args.mode,
-                                                                              args.dataset)),
-                  'a') as f:
-            f.write('Final result of classifier test (AUC / JSD):\n'+\
-                    '{:.4f} / {:.4f}\n\n'.format(eval_auc, eval_JSD))
+            with torch.no_grad():
+                print("Now looking at independent dataset:")
+                eval_acc, eval_auc, eval_JSD = evaluate_cls(classifier, val_dataloader, args,
+                                                            final_eval=True,
+                                                            calibration_data=test_dataloader)
+            print(f"Final result of classifier test (AUC / JSD) for input {n}:")
+            print("{:.4f} / {:.4f}".format(eval_auc, eval_JSD))
+            with open(os.path.join(args.output_dir, 'classifier_{}_{}_input_{}.txt'.format(args.mode,
+                                                                                  args.dataset, n)),
+                      'a') as f:
+                f.write(f'Final result of classifier test (AUC / JSD) for input {n}:\n'+\
+                        '{:.4f} / {:.4f}\n\n'.format(eval_auc, eval_JSD))
 
 
 if __name__ == '__main__':
