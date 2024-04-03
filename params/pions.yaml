@@ -26,8 +26,8 @@ lr_scheduler: one_cycle_lr
 
 weight_decay: 0.01
 betas: [0.9, 0.999]
-n_epochs: 10
-cycle_epochs: 10
+n_epochs: 1
+cycle_epochs: 1
 save_interval: 100
 
 # Architecture
@@ -40,6 +40,8 @@ permute_soft: False
 permute_layer: False
 num_bins: 10
 dropout: 0.0
+layer_norm: nn.BatchNorm1d
+layer_act: nn.SiLU
 bayesian: False
 prior_prec: 5000
 std_init: -15.0
