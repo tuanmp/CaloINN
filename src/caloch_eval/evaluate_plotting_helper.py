@@ -150,7 +150,7 @@ def plot_Etot_Einc(list_hlfs, reference_class, arg, p_label):
         filename = os.path.join(arg.output_dir, 'Etot_Einc_dataset_{}.pdf'.format(arg.dataset))
         fig.savefig(filename, dpi=300, format='pdf')
     if arg.mode in ['all', 'hist-chi', 'hist']:
-        seps = _separation_power(counts_ref, counts_data, bins)
+        seps = _separation_power(counts_ref_norm, counts_data_norm, None)
         print("Separation power of Etot / Einc histogram: {}".format(seps))
         with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
                   'a') as f:
@@ -216,7 +216,7 @@ def plot_E_layers(list_classes, reference_class, arg, p_label):
             if arg.mode in ['all', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
             if arg.mode in ['all', 'hist-chi', 'hist']:
-                seps = _separation_power(counts_ref, counts_data, bins)
+                seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of E layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
                           'a') as f:
@@ -284,7 +284,7 @@ def plot_ECEtas(list_hlfs, reference_class, arg, p_label):
             if arg.mode in ['all', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
             if arg.mode in ['all', 'hist-chi', 'hist']:
-                seps = _separation_power(counts_ref, counts_data, bins)
+                seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of EC Eta layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
                           'a') as f:
@@ -352,7 +352,7 @@ def plot_ECPhis(list_hlfs, reference_class, arg, p_label):
             if arg.mode in ['all', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
             if arg.mode in ['all', 'hist-chi', 'hist']:
-                seps = _separation_power(counts_ref, counts_data, bins)
+                seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of EC Phi layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
                           'a') as f:
@@ -420,7 +420,7 @@ def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label):
             if arg.mode in ['all', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
             if arg.mode in ['all', 'hist-chi', 'hist']:
-                seps = _separation_power(counts_ref, counts_data, bins)
+                seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of Width Eta layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
                           'a') as f:
@@ -488,7 +488,7 @@ def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label):
             if arg.mode in ['all', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
             if arg.mode in ['all', 'hist-chi', 'hist']:
-                seps = _separation_power(counts_ref, counts_data, bins)
+                seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of Width Phi layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
                           'a') as f:
@@ -549,7 +549,7 @@ def plot_sparsity(list_hlfs, reference_class, arg, p_label):
             if arg.mode in ['all', 'hist-p', 'hist']:
                 plt.savefig(pdf, format='pdf')
             if arg.mode in ['all', 'hist-chi', 'hist']:
-                seps = _separation_power(counts_ref, counts_data, bins)
+                seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of Width Phi layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)), 'a') as f:
                     f.write('Sparsity {}: \n'.format(key))
@@ -769,8 +769,11 @@ def _separation_power(hist1, hist2, bins):
     """ computes the separation power aka triangular discrimination (cf eq. 15 of 2009.03796)
         Note: the definition requires Sum (hist_i) = 1, so if hist1 and hist2 come from
         plt.hist(..., density=True), we need to multiply hist_i by the bin widhts
+
+        If bins=None, the histograms are already properly normalized
     """
-    hist1, hist2 = hist1*np.diff(bins), hist2*np.diff(bins)
+    if bins is not None:
+        hist1, hist2 = hist1*np.diff(bins), hist2*np.diff(bins)
     ret = (hist1 - hist2)**2
     ret /= hist1 + hist2 + 1e-16
     return 0.5 * ret.sum()
@@ -780,7 +783,11 @@ def chi2_eval(hist1, hist2, total_counts_ref, total_counts_data, bins):
     #total_counts_ref is the total number of reference counts in histo
     #total_counts_data is the total number of data counts in histo
     ret = (hist1 - hist2)**2
-    hist1_unnorm, hist2_unnorm = hist1*np.diff(bins)*total_counts_ref, hist2*np.diff(bins)*total_counts_data
-    sigma_sq = hist1_unnorm/((np.diff(bins)*total_counts_ref)**2)+hist2_unnorm/((np.diff(bins)*total_counts_data)**2)
+    if bins is not None:
+        hist1_unnorm, hist2_unnorm = hist1*np.diff(bins)*total_counts_ref, hist2*np.diff(bins)*total_counts_data
+        sigma_sq = hist1_unnorm/((np.diff(bins)*total_counts_ref)**2)+hist2_unnorm/((np.diff(bins)*total_counts_data)**2)
+    else:
+        hist1_unnorm, hist2_unnorm = hist1*total_counts_ref, hist2*total_counts_data
+        sigma_sq = hist1_unnorm/(total_counts_ref**2)+hist2_unnorm/(total_counts_data**2)
     ret /= sigma_sq
     return np.nansum(ret)
