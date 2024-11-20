@@ -1,10 +1,15 @@
-# caloinn
+# CaloINN
 INN for Calorimeter Shower Generation
 
-Code used for "Detector Flows" (arxiv:2312:09290) by 
+Code used for "Normalizing Flows for High-Dimensional Detector Simulations" (arxiv:2312:09290) by 
 Ernst F., Favaro L., Krause C., Plehn T., and Shih D.
 
-Fast calorimeter generation for CaloGAN dataset and Fast Calorimeter Challenge
+The samples used in the paper are publicly available on Zenodo. [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14178546.svg)](https://doi.org/10.5281/zenodo.14178546)
+
+Fast calorimeter generation for CaloGAN dataset and Fast Calorimeter Challenge.
+
+This is the main repository for the full-space CaloINN network. For the CaloGAN data results check the branch "calogan_data",
+while for our latent model see "VAE+INN".
 
 ## Usage
 
@@ -32,11 +37,14 @@ run\_name               | Name for the output folder
 Parameter               | Explanation
 ----------------------- | --------------------------------------------------------------------
 data\_path              | Name of the hdf5 file containing the data set
-train\_split            | Fraction of the data set used as training data
-width\_noise            | Width of the noise to be added to the data
-mask                    | None or 0: no mask applied; 1: onely punch throughs; 2:without punch throughs
-calo\_layer             | If given, only this calorimeter layer is used.
-dtype                   | float16, float32 or float64; Higher precision makes training and generating slower.
+val\_data\_path         | Name of the hdf5 file containing the validation data set
+xml\_path               | Name of the XML file containing the calorimeter binning
+val\_frac               | Fraction of the data used for validation
+width\_noise            | Higher end of the uniform noise to be added to the data
+dtype                   | float16, float32 or float64; Higher precision makes training and generating slower
+single\_energy          | Train on a single incident energy, only for dataset 1
+xml\_ptype              | Specifics for the XML file: "photon", "pion", or "electron"
+eval\_dataset           | Needed for the validation used in the CaloChallenge pipeline: "1-photons", "1-pions", "2", or "3"
 
 ### Training parameters
 
@@ -69,14 +77,17 @@ clamping                | Only affine blocks: clamping parameter
 num\_bins               | Only spline blocks: number of bins
 bounds\_init            | Only spline blocks: bounds of the splines
 bayesian                | True to enable Bayesian training
+sub\_layers             | A list for partial Bayesian networks, e.g. \[linear, linear, VBLinear\]
 prior\_prec             | Only Bayesian: Inverse of the prior standard deviation for the Bayesian layers
 std\_init               | Only Bayesian: ln of the initial standard deviation of the weight distributions
+layer\_act              | Activation function in the subnetwork
+norm                    | Apply ActNorm after preprocessing
 
 ### Preprocessing parameters
 Parameter               | Explanation
 ----------------------- | --------------------------------------------------------------------
 use\_extra\_dim         | If true an extra dimension is added to the data containing the ratio between parton and detector level energy. This value is used to renormalize generated data.
-use\_extra\_dims        | Same as use_extra_dim onely now u1, u2 and u3 are getting stored in three extra dimensions.
+use\_extra\_dims        | Adds as extra dimensions the energy variables u_i
 use_norm                | If true samples are normalized to the incident energy. Do not use in combination with use\_extra\_dim or use\_extra\_dims 
 log\_cond               | If true use the logarithm of the incident energy as condition
 alpha                   | Constant value to add on the data before taking the logarithm 
