@@ -19,6 +19,8 @@ dup = lambda a: np.append(a, a[-1])
 # settings for the various plots. These should be larger than the number of hlf files
 colors = ["tab:blue", "tab:orange"]
 labels = ["INN", "VAE+INN"]
+#colors = ["tab:orange"]
+#labels = ["VAE+INN"]
 
 plt.rc("font", family="serif", size=20)
 plt.rc("axes", titlesize="medium")
@@ -117,7 +119,7 @@ def plot_Etot_Einc(list_hlfs, reference_class, arg, p_label):
     ax[0].fill_between(bins, dup(counts_ref_norm+geant_error), dup(counts_ref_norm-geant_error), step='post', color='k', alpha=0.2)
     ax[1].fill_between(bins, dup(1-geant_error/counts_ref_norm), dup(1+geant_error/counts_ref_norm), step='post', color='k', alpha=0.2 )
     for i in range(len(list_hlfs)):
-        if list_hlfs[i] == None:
+        if labels[i] == None:
             pass
         else:
             counts, _ = np.histogram(list_hlfs[i].GetEtot() / list_hlfs[i].Einc.squeeze(), bins=bins, density=False)
@@ -160,7 +162,7 @@ def plot_Etot_Einc(list_hlfs, reference_class, arg, p_label):
     plt.close()
 
 
-def plot_E_layers(list_classes, reference_class, arg, p_label):
+def plot_E_layers(list_classes, reference_class, arg, p_label, energy=None):
     """ plots energy deposited in each layer """
     filename = os.path.join(arg.output_dir, 'E_layer_dataset_{}.pdf'.format(
                 arg.dataset))
@@ -171,10 +173,20 @@ def plot_E_layers(list_classes, reference_class, arg, p_label):
                 bins = np.logspace(np.log10(arg.min_energy),
                                    np.log10(reference_class.GetElayers()[key].max()),
                                    40)
+                if energy is not None:
+                    e_lay = np.copy(reference_class.GetElayers()[key])
+                    e_lay[e_lay == 0] = np.nan
+
+                    q01 = np.nanquantile(e_lay, 0.003)
+                    if np.isnan(q01):
+                        q01 = 0.0
+                    bins = np.logspace(np.log10(q01+1.e-6),
+                                   np.log10(reference_class.GetElayers()[key].max()+1.1e-6),
+                                   40)
             else:
                 bins = 40
             
-            counts_ref, bins = np.histogram(reference_class.GetElayers()[key], bins=bins, density=False)
+            counts_ref, bins = np.histogram(reference_class.GetElayers()[key]+1.e-6, bins=bins, density=False)
             counts_ref_norm = counts_ref/counts_ref.sum()
             geant_error = counts_ref_norm/np.sqrt(counts_ref)
             ax[0].step(bins, dup(counts_ref_norm), label='GEANT', linestyle='-',
@@ -211,7 +223,9 @@ def plot_E_layers(list_classes, reference_class, arg, p_label):
             ax[1].set_xlabel(f'$E_{{{key}}}$ [MeV]')
             ax[0].set_yscale('log'), ax[0].set_xscale('log')
             ax[1].set_xscale('log')
-            ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
+            ax[0].text(0.52, 0.03, energy, fontsize=15, transform=ax[0].transAxes)
+            ax[0].legend(loc='lower left', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
+
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
             if arg.mode in ['all', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
@@ -225,7 +239,7 @@ def plot_E_layers(list_classes, reference_class, arg, p_label):
                     f.write('\n\n')
             plt.close()
 
-def plot_ECEtas(list_hlfs, reference_class, arg, p_label):
+def plot_ECEtas(list_hlfs, reference_class, arg, p_label, energy=None):
     """ plots center of energy in eta """
     filename = os.path.join(arg.output_dir,
                 'ECEta_layer_dataset_{}.pdf'.format(arg.dataset))
@@ -237,6 +251,9 @@ def plot_ECEtas(list_hlfs, reference_class, arg, p_label):
                 lim = (-500., 500.)
             else:
                 lim = (-100., 100.)
+            if energy is not None:
+                q99 = np.quantile(reference_class.GetECEtas()[key], 0.997)
+                lim = (-q99, q99)
             fig, ax = plt.subplots(2, 1, figsize=(5, 4.5), gridspec_kw={"height_ratios": (4,1), "hspace": 0.0}, sharex=True)
             bins = np.linspace(*lim, 51)
 
@@ -248,7 +265,7 @@ def plot_ECEtas(list_hlfs, reference_class, arg, p_label):
             ax[0].fill_between(bins, dup(counts_ref_norm+geant_error), dup(counts_ref_norm-geant_error), step='post', color='k', alpha=0.2)
             ax[1].fill_between(bins, dup(1-geant_error/counts_ref_norm), dup(1+geant_error/counts_ref_norm), step='post', color='k', alpha=0.2 )
             for i in range(len(list_hlfs)):
-                if list_hlfs[i] == None:
+                if labels[i] == None:
                     pass
                 else:
                     counts, _ = np.histogram(list_hlfs[i].GetECEtas()[key], bins=bins, density=False)
@@ -278,7 +295,8 @@ def plot_ECEtas(list_hlfs, reference_class, arg, p_label):
             ax[0].set_xlim(*lim)
             ax[0].set_yscale('log')
             ax[1].set_ylabel(r'$\frac{\text{Model}}{\text{GEANT}}$')
-            ax[0].legend(loc=(0.57, 0.54), frameon=False, title=p_label, handlelength=1.5, title_fontsize=15, fontsize=15)
+            ax[0].text(0.02, 0.92, energy, fontsize=15, transform=ax[0].transAxes)
+            ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, title_fontsize=15, fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
 
             if arg.mode in ['all', 'hist-p', 'hist']:
@@ -293,7 +311,7 @@ def plot_ECEtas(list_hlfs, reference_class, arg, p_label):
                     f.write('\n\n')
             plt.close()
 
-def plot_ECPhis(list_hlfs, reference_class, arg, p_label):
+def plot_ECPhis(list_hlfs, reference_class, arg, p_label, energy=None):
     """ plots center of energy in phi """
     filename = os.path.join(arg.output_dir,
                 'ECPhi_layer_dataset_{}.pdf'.format(arg.dataset))
@@ -305,6 +323,9 @@ def plot_ECPhis(list_hlfs, reference_class, arg, p_label):
                 lim = (-500., 500.)
             else:
                 lim = (-100., 100.)
+            if energy is not None:
+                q99 = np.quantile(reference_class.GetECPhis()[key], 0.997)
+                lim = (-q99, q99)
             fig, ax = plt.subplots(2, 1, figsize=(5, 4.5), gridspec_kw={"height_ratios": (4,1), "hspace": 0.0}, sharex=True)
             bins = np.linspace(*lim, 51)
             
@@ -316,7 +337,7 @@ def plot_ECPhis(list_hlfs, reference_class, arg, p_label):
             ax[0].fill_between(bins, dup(counts_ref_norm+geant_error), dup(counts_ref_norm-geant_error), step='post', color='k', alpha=0.2)
             ax[1].fill_between(bins, dup(1-geant_error/counts_ref_norm), dup(1+geant_error/counts_ref_norm), step='post', color='k', alpha=0.2 )
             for i in range(len(list_hlfs)):
-                if list_hlfs[i] == None:
+                if labels[i] == None:
                     pass
                 else:
                     counts, _ = np.histogram(list_hlfs[i].GetECPhis()[key], bins=bins, density=False)
@@ -346,7 +367,8 @@ def plot_ECPhis(list_hlfs, reference_class, arg, p_label):
             ax[0].set_xlim(*lim)
             ax[0].set_yscale('log')
             ax[1].set_ylabel(r'$\frac{\text{Model}}{\text{GEANT}}$')
-            ax[0].legend(loc=(0.57, 0.54), frameon=False, title=p_label, handlelength=1.5, title_fontsize=15, fontsize=15)
+            ax[0].text(0.02, 0.92, energy, fontsize=15, transform=ax[0].transAxes)
+            ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, title_fontsize=15, fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
 
             if arg.mode in ['all', 'hist-p', 'hist']:
@@ -361,7 +383,7 @@ def plot_ECPhis(list_hlfs, reference_class, arg, p_label):
                     f.write('\n\n')
             plt.close()
 
-def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label):
+def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label, energy=None):
     """ plots width of center of energy in eta """
     filename = os.path.join(arg.output_dir,
                 'WidthEta_layer_dataset_{}.pdf'.format(arg.dataset))
@@ -373,6 +395,11 @@ def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label):
                 lim = (0., 400.)
             else:
                 lim = (0., 100.)
+            if energy is not None:
+                q99 = np.quantile(reference_class.GetWidthEtas()[key], 0.997)
+                q01 = np.quantile(reference_class.GetWidthEtas()[key], 0.003)
+                lim = (q01, q99)
+ 
             fig, ax = plt.subplots(2,1, figsize=(5, 4.5), gridspec_kw={"height_ratios": (4,1), "hspace": 0.0}, sharex=True)
             bins = np.linspace(*lim, 51)
             
@@ -384,7 +411,7 @@ def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label):
             ax[0].fill_between(bins, dup(counts_ref_norm+geant_error), dup(counts_ref_norm-geant_error), step='post', color='k', alpha=0.2)
             ax[1].fill_between(bins, dup(1-geant_error/counts_ref_norm), dup(1+geant_error/counts_ref_norm), step='post', color='k', alpha=0.2 )
             for i in range(len(list_hlfs)):
-                if list_hlfs[i] == None:
+                if labels[i] == None:
                     pass
                 else:
                     counts, _ = np.histogram(list_hlfs[i].GetWidthEtas()[key], bins=bins, density=False)
@@ -414,7 +441,8 @@ def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label):
             ax[0].set_xlim(*lim)
             ax[0].set_yscale('log')
             ax[1].set_ylabel(r'$\frac{\text{Model}}{\text{GEANT}}$')
-            ax[0].legend(loc=(0.57, 0.54), frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
+            ax[0].text(0.52, 0.92, energy, fontsize=15, transform=ax[0].transAxes)
+            ax[0].legend(loc='lower left', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
      
             if arg.mode in ['all', 'hist-p', 'hist']:
@@ -429,7 +457,7 @@ def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label):
                     f.write('\n\n')
             plt.close()
 
-def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label):
+def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label, energy=None):
     """ plots width of center of energy in phi """
     filename = os.path.join(arg.output_dir,
                     'WidthPhi_layer_dataset_{}.pdf'.format(arg.dataset))
@@ -441,6 +469,11 @@ def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label):
                 lim = (0., 400.)
             else:
                 lim = (0., 100.)
+            if energy is not None:
+                q99 = np.quantile(reference_class.GetWidthPhis()[key], 0.997)
+                q01 = np.quantile(reference_class.GetWidthPhis()[key], 0.003)
+                lim = (q01, q99)
+ 
             fig, ax = plt.subplots(2, 1, figsize=(5, 4.5), gridspec_kw={"height_ratios": (4,1), "hspace": 0.0}, sharex=True)
             bins = np.linspace(*lim, 51)
             
@@ -452,7 +485,7 @@ def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label):
             ax[0].fill_between(bins, dup(counts_ref_norm+geant_error), dup(counts_ref_norm-geant_error), step='post', color='k', alpha=0.2)
             ax[1].fill_between(bins, dup(1-geant_error/counts_ref_norm), dup(1+geant_error/counts_ref_norm), step='post', color='k', alpha=0.2 )
             for i in range(len(list_hlfs)):
-                if list_hlfs[i] == None:
+                if labels[i] == None:
                     pass
                 else:
                     counts, _ = np.histogram(list_hlfs[i].GetWidthPhis()[key], bins=bins, density=False)
@@ -482,7 +515,8 @@ def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label):
             ax[0].set_xlim(*lim)
             ax[0].set_yscale('log')
             ax[1].set_ylabel(r'$\frac{\text{Model}}{\text{GEANT}}$')
-            ax[0].legend(loc=(0.57, 0.54), frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
+            ax[0].text(0.52, 0.92, energy, fontsize=15, transform=ax[0].transAxes)
+            ax[0].legend(loc='lower left', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
      
             if arg.mode in ['all', 'hist-p', 'hist']:
@@ -497,13 +531,14 @@ def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label):
                     f.write('\n\n')
             plt.close()
 
-def plot_sparsity(list_hlfs, reference_class, arg, p_label):
+def plot_sparsity(list_hlfs, reference_class, arg, p_label, energy=None):
     """ Plot sparsity of relevant layers"""
     filename = os.path.join(arg.output_dir,
                 'Sparsity_layer_dataset_{}.pdf'.format(arg.dataset))
     with PdfPages(filename) as pdf:
         for key in reference_class.GetSparsity().keys():
             lim = (0, 1)
+ 
             fig, ax = plt.subplots(2, 1, figsize=(5,4.5), gridspec_kw={"height_ratios": (4,1), "hspace": 0.0}, sharex=True)
             bins = np.linspace(*lim, 20)
             
@@ -515,7 +550,7 @@ def plot_sparsity(list_hlfs, reference_class, arg, p_label):
             ax[0].fill_between(bins, dup(counts_ref_norm+geant_error), dup(counts_ref_norm-geant_error), step='post', color='k', alpha=0.2)
             ax[1].fill_between(bins, dup(1-geant_error/counts_ref_norm), dup(1+geant_error/counts_ref_norm), step='post', color='k', alpha=0.2 )
             for i in range(len(list_hlfs)):
-                if list_hlfs[i] == None:
+                if labels[i] == None:
                     pass
                 else:
                     counts, _ = np.histogram(1-list_hlfs[i].GetSparsity()[key], bins=bins, density=False)
@@ -544,6 +579,7 @@ def plot_sparsity(list_hlfs, reference_class, arg, p_label):
             ax[1].set_xlabel(f"$\\lambda_{{{key}}}$")
             #plt.yscale('log')
             ax[1].set_xlim(*lim)
+            ax[0].text(0.02, 0.92, energy, fontsize=15, transform=ax[0].transAxes)
             ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
             fig.tight_layout(pad=0.0, h_pad=0.0, w_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
             if arg.mode in ['all', 'hist-p', 'hist']:
@@ -700,11 +736,11 @@ def plot_atlas_style(hlfs, reference_class, arg, p_label):
             error_n = counts_n_norm/np.sqrt(counts_n)
             
             if i in [0, 1, 2]:
-                energy_label = 'E = {:.0f} MeV'.format(energy)
+                energy_label = '$E_\\text{{inc}}$={:.0f} MeV'.format(energy)
             elif i in np.arange(3, 12):
-                energy_label = 'E = {:.1f} GeV'.format(energy/1e3)
+                energy_label = '$E_\\text{{inc}}$={:.1f} GeV'.format(energy/1e3)
             else:
-                energy_label = 'E = {:.1f} TeV'.format(energy/1e6)
+                energy_label = '$E_\\text{{inc}}$={:.1f} TeV'.format(energy/1e6)
 
 
             ax[even_pair].step(bins, dup(counts_n_norm), color=colors[n],
@@ -739,13 +775,13 @@ def plot_atlas_style(hlfs, reference_class, arg, p_label):
 
         if odd_pair[0]==7:
             ax[odd_pair].set_xlabel(f'$E_{{\\text{{tot}}}} / E_{{\\text{{inc}}}}$')
-
+            
         if i in [0, 1, 2]:
-            energy_label = 'E = {:.0f} MeV'.format(energy)
+            energy_label = '$E_\\text{{inc}}$={:.0f} MeV'.format(energy)
         elif i in np.arange(3, 12):
-            energy_label = 'E = {:.1f} GeV'.format(energy/1e3)
+            energy_label = '$E_\\text{{inc}}$={:.1f} GeV'.format(energy/1e3)
         else:
-            energy_label = 'E = {:.1f} TeV'.format(energy/1e6)
+            energy_label = '$E_\\text{{inc}}$={:.1f} TeV'.format(energy/1e6)
 
         ax[even_pair].text(0.03, 0.9, energy_label, fontsize=16, transform=ax[even_pair].transAxes)
 

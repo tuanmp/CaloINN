@@ -4,20 +4,21 @@ from glob import glob
 import yaml
 import os
 
-import evaluate
+from caloch_eval import evaluate
 
 if __name__ == '__main__':
     
-    dirs = glob('../../temp/detector_flow_final_samples/ds1-photons/')
+    dirs = glob('../../temp/detector_flow_final_samples/ds3/')
 
+    print("Looking at directories: ", dirs)
     mode = 'hist'
     for i in dirs:
         #with open(i+'params.yaml') as f:
         #    params = yaml.load(f, Loader=yaml.FullLoader)
         #reference = params['val_data_path']
         #ref_path, _  = os.path.split(params['val_data_path'])
-        reference = "/remote/gpu06/favaro/datasets/calo_challenge/gamma_data_2.hdf5"
-        dataset = '1-photons'
+        reference = "/remote/gpu06/favaro/datasets/calo_challenge/dataset_3_2_full.hdf5"
+        dataset = '3'
         #reference = ref_path+'/dataset_2_2.hdf5'
         #dataset = params['eval_dataset']
         single_energy = None
@@ -33,5 +34,5 @@ if __name__ == '__main__':
             evaluate.main(f"-i {i}/inn_samples.hdf5 -r {reference} -m {mode} -d {dataset} --output_dir {i}/eval/final/ --cut 1.0e0 --energy {single_energy} --cls_batch_size {batch}".split())
         else:
             batch = 1000
-            evaluate.main(f"-i {i}/inn_samples.hdf5 -i2 {i}/vaeinn_samples.hdf5 -r {reference} -m {mode} -d {dataset} --output_dir {i}/eval/final/ --cut 1e0 --cls_batch_size {batch}".split())
+            evaluate.main(f"-i none -i2 {i}/vaeinn_samples.hdf5 -r {reference} -m {mode} -d {dataset} --output_dir {i}/eval/final/ --cut 1.515e-3 --cls_batch_size {batch}".split())
 

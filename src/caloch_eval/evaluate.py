@@ -69,7 +69,7 @@ def define_parser():
     parser = argparse.ArgumentParser(description=('Evaluate calorimeter showers of the '+\
                                                   'Fast Calorimeter Challenge 2022.'))
 
-    parser.add_argument('--input_file', '-i', help='Name of the input file to be evaluated.')
+    parser.add_argument('--input_file', '-i', default='none', help='Name of the input file to be evaluated.')
     parser.add_argument('--input_file2', '-i2', default='none', type=str, help='Name of the second input file')
     parser.add_argument('--reference_file', '-r',
                         help='Name and path of the .hdf5 file to be used as reference. '+\
@@ -97,7 +97,7 @@ def define_parser():
 
     #Additional argument for classifier cut (0.001 is 1KeV?)
     parser.add_argument('--cut', type=float)
-    parser.add_argument('--energy', type=float, default=None)
+    parser.add_argument('--energy', nargs="*", type=float, default=None)
     #parser.add_argument('--source_dir', default='source/',
     #                    help='Folder that contains (soft links to) files required for'+\
     #                    ' comparative evaluations (high level features stored in .pkl or '+\
@@ -404,7 +404,13 @@ def extract_shower_and_energy(given_file, which, single_energy=None):
     """ reads .hdf5 file and returns samples and their energy """
     print("Extracting showers from {} file ...".format(which))
     if single_energy is not None:
-        energy_mask = given_file["incident_energies"][:] == single_energy
+        if len(single_energy) == 1:
+            energy_mask = np.rint(given_file["incident_energies"][:]) == single_energy[0]
+        elif len(single_energy) == 2:
+            energy_mask = (np.rint(given_file["incident_energies"][:]) >= single_energy[0]) & \
+                            (np.rint(given_file["incident_energies"][:]) <= single_energy[1])
+        else:
+            raise ValueError
         energy = given_file["incident_energies"][:][energy_mask].reshape(-1, 1)
         shower = given_file["showers"][:][energy_mask.flatten()]
     else:
@@ -428,24 +434,37 @@ def save_reference(ref_hlf, fname):
         pickle.dump(ref_hlf, file)
     print("Saving file with high-level features DONE.")
 
-def plot_histograms(hlfs, reference_class, arg, p_label):
+def plot_histograms(hlfs, reference_class, arg, p_label, energy=None):
     """ plots histograms based with reference file as comparison """
     if arg.dataset == '1-photons':
         p_label = r'$\gamma$ DS-1'
     elif arg.dataset == '1-pions':
         p_label = r'$\pi^{+}$ DS-1'
     elif arg.dataset == '2':
-        p_label = r'$e^{+}$ DS-2'
+        p_label = r'$e^{-}$ DS-2'
     else:
-        p_label = r'$e^{+}$ DS-3'
+        p_label = r'$e^{-}$ DS-3'
+    
+    if energy is None:
+        energy_label = ''
+    elif energy[-1] in 2**np.arange(8, 10):
+        energy_label = '$E_\\text{{inc}}$={:.0f} MeV'.format(energy[-1])
+    elif energy[-1] in 2**np.arange(11, 20):
+        energy_label = '$E_\\text{{inc}}$={:.1f} GeV'.format(energy[-1]/1e3)
+    elif energy[-1] in 2**np.arange(21, 25):
+        energy_label = '$E_\\text{{inc}}$={:.1f} TeV'.format(energy[-1]/1e6)
+    elif len(energy) == 2:
+        energy_label = '$E_\\text{{inc}} \\in$[$10^{{{:d}}}$, $10^{{{:d}}}$] GeV'.format(int(np.log10(energy[0]/1e3)), int(np.log10(energy[1]/1e3)))
+    else:
+        energy_label=''
 
     plot_Etot_Einc(hlfs, reference_class, arg, p_label)
-    plot_E_layers(hlfs, reference_class, arg, p_label)
-    plot_ECEtas(hlfs, reference_class, arg, p_label)
-    plot_ECPhis(hlfs, reference_class, arg, p_label)
-    plot_ECWidthEtas(hlfs, reference_class, arg, p_label)
-    plot_ECWidthPhis(hlfs, reference_class, arg, p_label)
-    plot_sparsity(hlfs, reference_class, arg, p_label)
+    plot_E_layers(hlfs, reference_class, arg, p_label, energy=energy_label)
+    plot_ECEtas(hlfs, reference_class, arg, p_label, energy=energy_label)
+    plot_ECPhis(hlfs, reference_class, arg, p_label, energy=energy_label)
+    plot_ECWidthEtas(hlfs, reference_class, arg, p_label, energy=energy_label)
+    plot_ECWidthPhis(hlfs, reference_class, arg, p_label, energy=energy_label)
+    plot_sparsity(hlfs, reference_class, arg, p_label, energy=energy_label)
     if arg.dataset[0] == '1':
         plot_Etot_Einc_discrete(hlfs[0], reference_class, arg, p_label)
 
@@ -457,11 +476,13 @@ def main(raw_args=None):
 
     if not os.path.isdir(args.output_dir):
         os.makedirs(args.output_dir)
+ 
+    list_files = []  
+    if args.input_file != 'none':
+        source_file = h5py.File(args.input_file, 'r')
+        list_files.append(source_file)
+        check_file(source_file, args, which='input')
 
-    source_file = h5py.File(args.input_file, 'r')
-    check_file(source_file, args, which='input')
-
-    list_files = [source_file, ]
     if args.input_file2 != 'none':
         source_file2 = h5py.File(args.input_file2, 'r')
         list_files.append(source_file2)
@@ -636,7 +657,7 @@ def main(raw_args=None):
         else:
             p_label = r'$e^{+}$ DS-3'
 
-        plot_histograms(hlfs, reference_hlf, args, p_label)
+        plot_histograms(hlfs, reference_hlf, args, p_label, args.energy)
         if args.dataset == '1-photons' or args.dataset == '1-pions':
             plot_atlas_style(hlfs, reference_hlf, args, p_label)
             

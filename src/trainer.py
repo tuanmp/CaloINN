@@ -243,11 +243,17 @@ class Trainer:
                 self.latent_samples(epoch)
 
                 # move everything to CaloChallenge evaluate.py
-                if epoch < 70:
-                    evaluate.main(f"-i {self.doc.basedir}/samples.hdf5 -r {self.params['val_data_path']} -m all -d {self.params['eval_dataset']} --output_dir {self.doc.basedir}/eval/{epoch}/ --cut 1.0e-3".split())
+                if epoch < 99:
+                    self.plot_default_from_caloch(
+                            sample_name='samples.hdf5', eval_name=f'{epoch}', cut=1.0e-3
+                            )
                 else:
-                    evaluate.main(f"-i {self.doc.basedir}/samples.hdf5 -r {self.params['val_data_path']} -m all -d {self.params['eval_dataset']} --output_dir {self.doc.basedir}/eval/{epoch}/ --cut 0.0".split())
-
+                    self.plot_default_from_caloch(
+                            sample_name='samples.hdf5', eval_name=f'{epoch}', cut=0.0
+                            )
+        #save the final model
+        self.save('_last')
+ 
     def set_optimizer(self, steps_per_epoch=1, no_training=False, params=None):
         """ Initialize optimizer and learning rate scheduling """
         if params is None:
@@ -345,7 +351,7 @@ class Trainer:
             generate new data using the modle and storing them to a file in the run folder.
 
             Parameters:
-            num_samples (int): Number of samples to generate
+            num_samples (int): Number of samples to generate, only used for ds2
             batch_size (int): Batch size for samlpling
         """
         self.model.eval()
@@ -410,6 +416,13 @@ class Trainer:
                 samples[start:stop] = self.model(x,c)[0].cpu()
             samples = samples.numpy()
         plotting.plot_latent(samples, self.doc.basedir, epoch)
+
+    def plot_default_from_caloch(self, sample_name='samples.hdf5', eval_name='final', cut=1.515e-3):
+        """
+        Run the default evaluation script for a single saved sample
+        It runs the full CaloChallenge evaluation pipeline
+        """
+        evaluate.main(f"-i {self.doc.basedir}/{sample_name} -r {self.params['val_data_path']} -m all -d {self.params['eval_dataset']} --output_dir {self.doc.basedir}/eval/{eval_name}/ --cut 1.515e-3".split())
 
     def plot_uncertaintys(self, plot_params, num_samples=100000, num_rand=30, batch_size = 10000):
         """

@@ -10,14 +10,19 @@ from trainer import Trainer
 
 def main():
     parser = argparse.ArgumentParser(description='train network')
-    parser.add_argument('param_file', help='where to find the parameters')
+    parser.add_argument('param_file', help='yaml file location with all the parameters')
     parser.add_argument('-c', '--use_cuda', action='store_true', default=False,
         help='whether cuda should be used')
     parser.add_argument('-p', '--plot', action='store_true', default=False,
-        help='make only plots for traint modle')
+        help='only run the evaluation script')
+    parser.add_argument('-g', '--generate', action='store_true', default=False,
+        help='generate and save a new sample from a trained model')
+    parser.add_argument('-n', '--nsamples', type=int, default=100000,
+        help='number of samples, only used for ds2')
     parser.add_argument('-d', '--model_dir', default=None,
-        help='model directory for only plot run')
-    parser.add_argument('-its', '--model_name')
+        help='directory used to load a model')
+    parser.add_argument('-its', '--model_name', default='_last',
+        help='name of the model used to generate the new sample')
     args = parser.parse_args()
 
     with open(args.param_file) as f:
@@ -25,11 +30,15 @@ def main():
     use_cuda = torch.cuda.is_available() and args.use_cuda
     device = 'cuda:0' if use_cuda else 'cpu'
     
-    if args.plot:
+    if args.plot or args.generate:
         doc = Documenter(params['run_name'], existing_run=args.model_dir)
     else:
         doc = Documenter(params['run_name'])
-    shutil.copy(args.param_file, doc.get_file('params.yaml'))
+    
+    try:
+        shutil.copy(args.param_file, doc.get_file('params.yaml'))
+    except shutil.SameFileError:
+        pass
     print('device: ', device)
 
     dtype = params.get('dtype', '')
@@ -40,29 +49,19 @@ def main():
     elif dtype=='float32':
         torch.set_default_dtype(torch.float32)
 
-    plot_params = {}
-    plot_configs = [
-        'plot_params/plot_layer_0.yaml',
-        'plot_params/plot_layer_1.yaml',
-        'plot_params/plot_layer_2.yaml',
-        'plot_params/plots.yaml'
-    ]
-    calo_layer = params.get('calo_layer', None)
-    if calo_layer is None:
-        for file_name in plot_configs:
-            with open(file_name) as f:
-                plot_params.update(yaml.load(f, Loader=yaml.FullLoader))
-    else:
-        with open(plot_configs[calo_layer]) as f:
-            plot_params.update(yaml.load(f, Loader=yaml.FullLoader))
-
     trainer = Trainer(params, device, doc)
-    if args.plot:
+    if args.generate:
         trainer.load(args.model_name)
+        trainer.generate(args.nsamples)
+        trainer.plot_default_from_caloch(
+                sample_name='samples.hdf5', eval_name='final', cut=1.515e-3
+                )
+    elif args.plot:
+        trainer.plot_default_from_caloch(
+                sample_name='samples.hdf5', eval_name='final', cut=1.515e-3
+                ) 
     else:
         trainer.train()
-    if 'bayesian' in params and params['bayesian']:
-        trainer.plot_uncertaintys(plot_params)
 
 if __name__=='__main__':
     main()

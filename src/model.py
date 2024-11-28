@@ -200,7 +200,7 @@ class CINN(nn.Module):
 
     def forward(self, x, c, rev=False, jac=True):
         if self.log_cond:
-            c_norm = torch.log2(c)
+            c_norm = torch.log10(c) # change to log from log2, log10 for ds2?
         else:
             c_norm = c
         if self.pre_subnet:
@@ -264,7 +264,7 @@ class CINN(nn.Module):
                     layer_class = layer_class,
                     layer_args = layer_args,
                     layer_norm = params.get("layer_norm", None),
-                    layer_act = params.get("layer_act", "relu"),
+                    layer_act = params.get("layer_act", "nn.ReLU"),
                     )
             if self.bayesian:
                 self.bayesian_layers.extend(
@@ -364,13 +364,6 @@ class CINN(nn.Module):
         #    name = "inp_norm"
         #))
         CouplingBlock, block_kwargs = self.get_coupling_block(self.params)
-        Affine = fm.AllInOneBlock
-        Affine_kwargs = {
-                            "affine_clamping": self.params.get("clamping", 5.),
-                            "subnet_constructor": self.get_constructor_func(self.params),
-                            "global_affine_init": 0.92,
-                            "permute_soft" : False
-                           }
  
         for i in range(self.params.get("n_blocks", 10)):
             if self.params.get("norm", True) and i!=0:
@@ -391,15 +384,6 @@ class CINN(nn.Module):
                     name = f"block_{i}"
                 )
             )
-            #nodes.append(
-            #    ff.Node(
-            #        [nodes[-1].out0],
-            #        Affine,
-            #        Affine_kwargs,
-            #        conditions = cond_node,
-            #        name = f"affine_{i}"
-            #    )
-            #)
          
         nodes.append(ff.OutputNode([nodes[-1].out0], name='out'))
         nodes.append(cond_node)
