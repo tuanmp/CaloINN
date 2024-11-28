@@ -200,7 +200,7 @@ class CINN(nn.Module):
 
     def forward(self, x, c, rev=False, jac=True):
         if self.log_cond:
-            c_norm = torch.log10(c) # change to log from log2, log10 for ds2?
+            c_norm = torch.log10(c) # use log10 for all the models (add a rescaling option)
         else:
             c_norm = c
         if self.pre_subnet:

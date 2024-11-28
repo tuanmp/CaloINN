@@ -11,9 +11,9 @@ Fast calorimeter generation for CaloGAN dataset and Fast Calorimeter Challenge.
 This is the main repository for the full-space CaloINN network. For the CaloGAN data results check the branch "calogan_data",
 while for our latent model see "VAE+INN".
 
-## Usage
+## Train a model
 
-Running a training:
+Start a training:
 ```
 python src/main.py params/<param_card>.yaml -c
 ```
@@ -21,6 +21,18 @@ This creates a subfolder in the `results` folder named `yyyymmdd_hhmmss_run_name
 prefix is the date and time and `run_name` is specified in the param card.
 
 Example param card used for pions in `params/pions.yaml`
+
+## Generate samples from an existing model
+Assuming the model is located in `<dir>` and saved model with name `model_<name>.pt`, to generate a new sample in this directory run:
+```
+python3 src/main.py <dir>/params.yaml -d <dir> -its <name> --generate -c 
+```
+Additionaly `--nsamples` provides a way to specify the number of samples generated for dataset 2.
+
+
+To only run the plotting from the CaloChallenge pipeline using the previously generated samples switch
+`--generate` with `--plot`.
+
 ## Parameters
 
 This is a list of the parameters that can be used in yaml parameter files. Many have default
