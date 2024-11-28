@@ -82,7 +82,7 @@ class CubicSplineBlock(fm.InvertibleModule):
         else:
             w = torch.zeros((channels, channels))
             for i, j in enumerate(np.random.permutation(channels)):
-                w[i, channels-i-1] = 1.
+                w[i, j] = 1.
 
         self.w_perm = nn.Parameter(w.view(channels, channels, *([1] * self.input_rank)),
                                    requires_grad=False)
