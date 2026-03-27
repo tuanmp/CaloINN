@@ -1,14 +1,14 @@
 import math
 import time
 
+import lightning as pl
 import numpy as np
 import torch
 import torch.distributions as dist
-import pytorch_lightning as pl
 
+import caloch_eval.evaluate as evaluate
 import data_util
 from model import CINN
-import caloch_eval.evaluate as evaluate
 
 
 class LogUniform(dist.TransformedDistribution):

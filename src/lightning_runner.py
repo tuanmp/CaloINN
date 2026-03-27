@@ -1,6 +1,6 @@
+import lightning as pl
 import torch
-import pytorch_lightning as pl
-from pytorch_lightning.callbacks import Callback
+from lightning.pytorch.callbacks import Callback
 
 from lightning_data import CaloINNDataModule
 from lightning_module import CaloINNLightningModule

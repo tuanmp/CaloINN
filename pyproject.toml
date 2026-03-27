@@ -1,0 +1,18 @@
+[project]
+name = "caloinn-lightning"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "freia>=0.2",
+    "h5py>=3.11.0",
+    "lightning>=2.2.5",
+    "matplotlib>=3.7.5",
+    "pandas>=2.0.3",
+    "pyyaml>=6.0.1",
+    "scikit-learn>=1.3.2",
+    "scipy>=1.10.1",
+    "setuptools>=75.3.4",
+    "torch==1.13",
+]
