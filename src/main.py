@@ -6,7 +6,6 @@ import yaml
 import torch
 
 from documenter import Documenter
-from trainer import Trainer
 
 def main():
     parser = argparse.ArgumentParser(description='train network')
@@ -23,6 +22,8 @@ def main():
         help='directory used to load a model')
     parser.add_argument('-its', '--model_name', default='_last',
         help='name of the model used to generate the new sample')
+    parser.add_argument('--lightning', action='store_true', default=False,
+        help='use PyTorch Lightning training/inference runner')
     args = parser.parse_args()
 
     with open(args.param_file) as f:
@@ -49,7 +50,12 @@ def main():
     elif dtype=='float32':
         torch.set_default_dtype(torch.float32)
 
-    trainer = Trainer(params, device, doc)
+    if args.lightning:
+        from lightning_runner import LightningRunner
+        trainer = LightningRunner(params, device, doc)
+    else:
+        from trainer import Trainer
+        trainer = Trainer(params, device, doc)
     if args.generate:
         trainer.load(args.model_name)
         trainer.generate(args.nsamples)
