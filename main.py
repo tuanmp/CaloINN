@@ -60,15 +60,18 @@ class ParamFileLightningModule(CaloINNLightningModule):
 
 class CaloINNLightningCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
-        parser.link_arguments("model.param_file", "data.param_file")
+        parser.link_arguments("data.val_frac", "model.train_val_frac")
+        parser.link_arguments("data.batch_size", "model.train_batch_size")
+        parser.link_arguments("data.shuffle", "model.train_shuffle")
 
 
 
 def main():
-    LightningCLI(
+    CaloINNLightningCLI(
         model_class=CaloINNLightningModule,
         datamodule_class=CaloINNDataModule,
         trainer_class=Trainer,
+        auto_configure_optimizers=False,
         trainer_defaults={"num_sanity_val_steps": 0},
         save_config_kwargs={"overwrite": True},
     )

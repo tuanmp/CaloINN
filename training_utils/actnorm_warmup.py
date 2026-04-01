@@ -73,6 +73,9 @@ class ActNormWarmupCallback(L.Callback):
         x = x.to(pl_module.device)
         c = c.to(pl_module.device)
 
+        if hasattr(pl_module, "_apply_input_noise"):
+            x = pl_module._apply_input_noise(x)
+
         cinn = pl_module.model
         was_training = cinn.training
 

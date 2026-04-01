@@ -168,8 +168,8 @@ class TestLightningParity(unittest.TestCase):
     def test_dataloader_split_matches_legacy(self):
         legacy, datamodule, _ = self._build_legacy_and_lightning(seed=11, max_events=80)
 
-        self.assertIsNotNone(datamodule._train_dataset)
-        self.assertIsNotNone(datamodule._val_dataset)
+        self.assertIsNotNone(datamodule._train_loader)
+        self.assertIsNotNone(datamodule._val_loader)
 
         x_dm, c_dm = next(iter(datamodule.train_dataloader()))
         self.assertEqual(x_dm.shape[1], legacy.train_loader.data.shape[1])

@@ -38,10 +38,18 @@ class CaloINNLightningModule(pl.LightningModule):
         width_noise=1e-7,
         custom_noise=False,
         single_energy=None,
+        train_val_frac=0.01,
+        train_batch_size=512,
+        train_shuffle=False,
+        init_from_legacy_train_split=True,
+        optimizer_params=None,
+        scheduler_params=None,
     ):
         super().__init__()
 
         self.cinn_params = cinn_params
+        self.optimizer_params = dict(optimizer_params or {})
+        self.scheduler_params = dict(scheduler_params or {})
         self.width_noise = width_noise
         self.batch_number = 0
         self._run_batch_diagnostics = False
@@ -74,22 +82,41 @@ class CaloINNLightningModule(pl.LightningModule):
     def load_init_tensors(self):
 
         rank_zero_info(f"Loading sample data from {self.hparams['setup_data_sample_path']} to initialize model parameters...")
-        
-        sample_data, layer_boundaries = data_util.load_data(
-            self.hparams["setup_data_sample_path"],
-            self.hparams["xml_ptype"],
-            self.hparams["xml_path"]
-        )
+        if self.hparams.get("init_from_legacy_train_split", True):
+            train_loader, _, layer_boundaries = data_util.get_loaders(
+                self.hparams["setup_data_sample_path"],
+                self.hparams["xml_path"],
+                self.hparams["xml_ptype"],
+                self.hparams.get("train_val_frac", 0.01),
+                self.hparams.get("train_batch_size", 512),
+                self.hparams["dataset_params"].get("eps", 1.0e-10),
+                device="cpu",
+                shuffle=bool(self.hparams.get("train_shuffle", False)),
+                width_noise=self.hparams.get("width_noise", 1e-7),
+                energy=self.hparams["dataset_params"].get("single_energy", None),
+                u0up_cut=self.hparams["dataset_params"].get("u0up_cut", 7.0),
+                u0low_cut=self.hparams["dataset_params"].get("u0low_cut", 0.0),
+                rew=self.hparams["dataset_params"].get("pt_rew", 1.0),
+                dep_cut=self.hparams["dataset_params"].get("dep_cut", 1.0e10),
+            )
+            x = train_loader.data.cpu().numpy()
+            c = train_loader.cond.cpu().numpy()
+        else:
+            sample_data, layer_boundaries = data_util.load_data(
+                self.hparams["setup_data_sample_path"],
+                self.hparams["xml_ptype"],
+                self.hparams["xml_path"],
+            )
 
-        x, c = data_util.preprocess(
-            sample_data,
-            layer_boundaries,
-            self.hparams["dataset_params"].get("eps", 1.0e-10),
-            u0up_cut=self.hparams["dataset_params"].get("u0up_cut", 7.0),
-            u0low_cut=self.hparams["dataset_params"].get("u0low_cut", 0.0),
-            rew=self.hparams["dataset_params"].get("pt_rew", 1.0),
-            dep_cut=self.hparams["dataset_params"].get("dep_cut", 1.0e10),
-        )
+            x, c = data_util.preprocess(
+                sample_data,
+                layer_boundaries,
+                self.hparams["dataset_params"].get("eps", 1.0e-10),
+                u0up_cut=self.hparams["dataset_params"].get("u0up_cut", 7.0),
+                u0low_cut=self.hparams["dataset_params"].get("u0low_cut", 0.0),
+                rew=self.hparams["dataset_params"].get("pt_rew", 1.0),
+                dep_cut=self.hparams["dataset_params"].get("dep_cut", 1.0e10),
+            )
 
         dtype = torch.get_default_dtype()
         x = torch.tensor(x, dtype=dtype)
@@ -100,7 +127,39 @@ class CaloINNLightningModule(pl.LightningModule):
 
         if stage == "fit":
             self.num_train_samples = self.trainer.datamodule.num_train_samples
+            self.steps_per_epoch = len(self.trainer.datamodule.train_dataloader())
             rank_zero_info(f"Number of training samples: {self.num_train_samples}")
+
+    def configure_optimizers(self):
+        opt_cfg = self.optimizer_params
+        sched_cfg = self.scheduler_params
+
+        optimizer = torch.optim.AdamW(
+            self.model.params_trainable,
+            lr=float(opt_cfg.get("lr", 1e-5)),
+            betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
+            eps=float(opt_cfg.get("eps", 1e-10)),
+            weight_decay=float(opt_cfg.get("weight_decay", 0.0)),
+        )
+
+        steps_per_epoch = int(
+            sched_cfg.get("steps_per_epoch", getattr(self, "steps_per_epoch", 1))
+        )
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=float(sched_cfg.get("max_lr", opt_cfg.get("lr", 1e-5) * 10.0)),
+            epochs=int(sched_cfg.get("epochs", 1)),
+            steps_per_epoch=max(1, steps_per_epoch),
+        )
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
+        }
 
     def eval_quantiles(self, data):
         cp = torch.clone(data)
@@ -132,6 +191,11 @@ class CaloINNLightningModule(pl.LightningModule):
             loss = inn_loss
         return loss, inn_loss, kl_loss
 
+    def _apply_input_noise(self, x: torch.Tensor) -> torch.Tensor:
+        if self.width_noise <= 0:
+            return x
+        return x + torch.rand_like(x) * self.width_noise
+
     def on_fit_start(self):
         if self.model.bayesian:
             self.model.enable_map()
@@ -152,6 +216,7 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, c = batch
+        x = self._apply_input_noise(x)
         self.batch_number += 1
         self._run_batch_diagnostics = self.diagnostics.should_run_batch(self.current_epoch, batch_idx)
         self._diag_batch_idx = int(batch_idx)
@@ -175,6 +240,7 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x, c = batch
+        x = self._apply_input_noise(x)
         loss, inn_loss, kl_loss = self._compute_losses(x, c, run_diagnostics=False)
 
         if not torch.isfinite(loss):
@@ -192,6 +258,7 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def test_step(self, batch, batch_idx):
         x, c = batch
+        x = self._apply_input_noise(x)
         loss, inn_loss, kl_loss = self._compute_losses(x, c, run_diagnostics=False)
 
         self.log("test_loss", loss, on_step=False, on_epoch=True, batch_size=x.shape[0])

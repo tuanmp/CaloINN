@@ -1,0 +1,173 @@
+
+seed_everything: 2026
+
+trainer:
+  stage_dir: /pscratch/sd/p/pmtuan/caloinn
+  run_name: full_training_det_u10_rew85_1e6
+  accelerator: auto
+  devices: 1
+  max_epochs: 1
+  precision: 32
+  callbacks:
+    - class_path : lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        mode: min
+        save_top_k: 1
+        filename: '{epoch}-{val_loss:.2f}'
+        save_last: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: training_utils.prediction_writer.PredictionWriter
+      init_args:
+        predict_output_file: "sample.hdf5"
+    - class_path: training_utils.result_plotter.ResultPlotter
+      init_args:
+        reference_file: /pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5
+        prediction_file: "sample.hdf5"
+    - class_path: training_utils.latent_sample.LatentSampler
+      init_args:
+        sampling_interval: 10
+    - class_path: training_utils.actnorm_warmup.ActNormWarmupCallback
+      init_args:
+        enabled: true
+        num_samples: 1024
+        deterministic_seed: 2026
+        disable_batchnorm_updates: true
+        calibration_source: train_loader
+
+data:
+  data_path: "/pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5"
+  val_data_path: "/pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5"
+  cond_key: "incident_energies"
+  sample_key: showers
+  eval_dataset: "1-pions"
+  batch_size: 512
+  predict_batch_size: 1000
+  val_frac: 0.01
+  shuffle: False
+  num_workers: 0
+  dataset_kwargs:
+    xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/binning_dataset_1_pions.xml
+    xml_ptype: "pion"
+    single_energy: null
+    eps: 1.0e-10
+    u0up_cut: 3.5
+    u0low_cut: 0.0
+    pt_rew: 1.0
+    dep_cut: 600
+    width_noise: 5.0e-6
+    
+
+
+model:
+  single_energy: null
+  setup_data_sample_path: /pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5
+  actnorm_calibration_samples: 1024
+  width_noise: 5.0e-6
+  # max_init_samples: 100000
+  custom_noise: False
+  xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/binning_dataset_1_pions.xml
+  xml_ptype: "pion"
+  enable_diagnostics: false
+  dataset_params:
+    xml_ptype: "pion"
+    single_energy: null
+    eps: 1.0e-10
+    u0up_cut: 3.5
+    u0low_cut: 0.0
+    pt_rew: 1.0
+    dep_cut: 600
+    eval_dataset: "1-pions"
+  optimizer_params:
+    lr: 0.00001
+    betas: [0.9, 0.999]
+    eps: 0.0000000001
+    weight_decay: 0.01
+  scheduler_params:
+    max_lr: 0.0001
+    epochs: 1
+    steps_per_epoch: 234
+  
+  cinn_params:
+    bayesian: False
+    alpha: 1.0e-8
+    alpha_logit: 1.0e-6
+    use_extra_dims: True
+    use_norm: False
+    log_cond: True
+    layers_per_block: 4
+    internal_size: 256
+    n_blocks: 12
+    coupling_type: rational_quadratic
+    dropout: 0.0
+    layer_norm: nn.BatchNorm1d
+    layer_act: nn.SiLU
+    num_bins: 10
+    bounds_init: 18
+    permute_soft: False
+    permute_layer: False
+    std_init: -15.0
+    prior_prec: 5000
+    sub_layers: [linear, linear, linear, linear]
+    norm: True
+
+
+
+# p_type: piplus
+# dtype: float32
+
+# # Data
+# data_path: /pscratch/sd/p/pmtuan/ddsim/single_pion_uniform/sample_ds1_pion.hdf5
+# # data_path: /pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5
+# val_data_path: /pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5
+# xml_path: ./binning_dataset_1_pions.xml
+# single_energy: null
+# width_noise: 5.0e-6
+# custom_noise: False
+
+# eps: 1.0e-10
+# xml_ptype: "pion"
+# eval_dataset: "1-pions"
+# u0up_cut: 3.5
+# u0low_cut: 0.0
+# pt_rew: 1.0
+# dep_cut: 600
+
+# # Training
+# lr: 1.e-5
+# max_lr: 1.e-4
+
+# lr_scheduler: one_cycle_lr
+
+# weight_decay: 0.01
+# betas: [0.9, 0.999]
+# n_epochs: 1
+# cycle_epochs: 1
+# save_interval: 100
+
+# # Architecture
+# n_blocks: 1
+# internal_size: 256
+# layers_per_block: 4
+# coupling_type: rational_quadratic
+# bounds_init: 18
+# permute_soft: False
+# permute_layer: False
+# num_bins: 10
+# dropout: 0.0
+# layer_norm: nn.BatchNorm1d
+# layer_act: nn.SiLU
+# bayesian: False
+# prior_prec: 5000
+# std_init: -15.0
+
+# sub_layers: [linear, linear, linear, linear]
+# norm: True
+# # Preprocessing
+# use_extra_dims: True
+# use_norm: False
+# log_cond: True
+# alpha: 1.0e-8
+# alpha_logit: 1.0e-6
