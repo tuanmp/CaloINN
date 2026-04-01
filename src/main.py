@@ -1,11 +1,14 @@
-import shutil
 import argparse
 import os
+import random
+import shutil
 
-import yaml
+import numpy as np
 import torch
+import yaml
 
 from documenter import Documenter
+
 
 def main():
     parser = argparse.ArgumentParser(description='train network')
@@ -49,6 +52,16 @@ def main():
         torch.set_default_dtype(torch.float16)
     elif dtype=='float32':
         torch.set_default_dtype(torch.float32)
+
+    # Keep legacy CLI stochasticity aligned with Lightning when seed is provided.
+    if "seed" in params and params["seed"] is not None:
+        seed = int(params["seed"])
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        print(f"seed: {seed}")
 
     if args.lightning:
         from lightning_runner import LightningRunner

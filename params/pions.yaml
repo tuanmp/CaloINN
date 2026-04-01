@@ -1,13 +1,16 @@
 run_name: full_training_det_u10_rew85_1e6
+seed: 2026
 p_type: piplus
 dtype: float32
 # Data
-data_path: /remote/gpu06/favaro/datasets/calo_challenge/piplus_data_1.hdf5
-val_data_path: /remote/gpu06/favaro/datasets/calo_challenge/piplus_data_1.hdf5
-xml_path: /remote/gpu06/favaro/datasets/calo_challenge/binning_dataset_1_pions.xml
+# data_path: /pscratch/sd/p/pmtuan/ddsim/single_pion_uniform/sample_ds1_pion.hdf5
+data_path: /pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5
+val_data_path: /pscratch/sd/p/pmtuan/calochallenge/ds1-pions/dataset_1_pions_2.hdf5
+xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/binning_dataset_1_pions.xml
 single_energy: null
 width_noise: 5.0e-6
 custom_noise: False
+shuffle: False
 val_frac: 0.01
 eps: 1.0e-10
 xml_ptype: "pion"

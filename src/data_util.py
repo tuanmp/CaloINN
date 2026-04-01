@@ -1,10 +1,11 @@
-import numpy as np
 import h5py
+import numpy as np
 import torch
 
-from myDataLoader import MyDataLoader
-from caloch_eval.XMLHandler import XMLHandler
 import caloch_eval.HighLevelFeatures as HLF
+from caloch_eval.XMLHandler import XMLHandler
+from myDataLoader import MyDataLoader
+
 
 def load_data_calo(filename, layer_boundaries, energy=None):
     data = {}
@@ -24,7 +25,7 @@ def load_data_calo(filename, layer_boundaries, energy=None):
     
     return data
 
-def load_data(filename, particle_type,  xml_filename, threshold=1e-5, energy=None):
+def load_data(data_file, particle_type,  xml_filename, threshold=1e-5, energy=None, indices: np.array=None):
     """Loads the data for a dataset 1 from the calo challenge"""
     
     # Create a XML_handler to extract the layer boundaries. (Geometric setup is stored in the XML file)
@@ -38,20 +39,31 @@ def load_data(filename, particle_type,  xml_filename, threshold=1e-5, energy=Non
 
     # Load and store the data. Make sure to slice according to the layers.
     # Also normalize to 100 GeV (The scale of the original data is MeV)
-    data_file = h5py.File(filename, 'r')
+    should_close = False
+    if isinstance(data_file, str):
+        data_file = h5py.File(data_file, 'r')
+        should_close = True
     #data["energy"] = data_file["incident_energies"][:] / 1.e3
     if energy is not None:
         energy_mask = data_file["incident_energies"][:] == energy
         data["energy"] = data_file["incident_energies"][:][energy_mask].reshape(-1, 1) / 1.e3
-        print(energy_mask.shape)
+        # print(energy_mask.shape)
         for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
             data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end][energy_mask.flatten()] / 1.e3
     else:
-        data["energy"] = data_file["incident_energies"][:] / 1.e3
-        for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
-            data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end] / 1.e3
-        print(data[f"layer_{layer_index}"].shape)
-    data_file.close()
+        if indices is not None:
+            sorted_indices = np.sort(indices)
+            data["energy"] = data_file["incident_energies"][sorted_indices] / 1.e3
+            for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
+                data[f"layer_{layer_index}"] = data_file["showers"][sorted_indices][..., layer_start:layer_end]/ 1.e3
+            # print(data[f"layer_{layer_index}"].shape)
+        else:
+            data["energy"] = data_file["incident_energies"][:] / 1.e3
+            for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
+                data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end] / 1.e3
+            # print(data[f"layer_{layer_index}"].shape)
+    if should_close:
+        data_file.close()
     
     return data, layer_boundaries
 
@@ -178,7 +190,7 @@ def preprocess_wenergy(data, layer_boundaries, eps=1.0e-10, rew=1.0):
     print(x.shape, c.shape)
     return x, c
 
-def preprocess(data, layer_boundaries, eps=1.e-10, u0up_cut=7.0, u0low_cut=0.0, rew=1.0, dep_cut=1e10):
+def preprocess(data, layer_boundaries, eps=1.e-10, u0up_cut=7.0, u0low_cut=0.0, rew=1.0, dep_cut=1e10, verbose=False):
     """Transforms the dict 'data' into the ndarray 'x'. Furthermore, the events
     are masked and the extra dims are appended to the incident energies"""
     energy, layers = get_energy_and_sorted_layers(data)
@@ -197,15 +209,17 @@ def preprocess(data, layer_boundaries, eps=1.e-10, u0up_cut=7.0, u0low_cut=0.0, 
     
     binary_mask &= ((x < dep_cut).prod(-1) != 0)
     
-    print(f"cut on zero energy dep.: #", (np.sum(x, axis=1)>=0).sum())
-    print(f"cut on u0 upper {u0up_cut}: #", (extra_dims[:,0] < u0up_cut).sum())
-    print(f"cut on u0 lower {u0low_cut}: #", (extra_dims[:,0] >= u0low_cut).sum())
-    print(f"dep cut {dep_cut}: #", (x<dep_cut).prod(-1).sum())
+    if verbose:
+        print(f"cut on zero energy dep.: #", (np.sum(x, axis=1)>=0).sum())
+        print(f"cut on u0 upper {u0up_cut}: #", (extra_dims[:,0] < u0up_cut).sum())
+        print(f"cut on u0 lower {u0low_cut}: #", (extra_dims[:,0] >= u0low_cut).sum())
+        print(f"dep cut {dep_cut}: #", (x<dep_cut).prod(-1).sum())
 
     x = x[binary_mask]
     c = c[binary_mask]
     extra_dims = extra_dims[binary_mask]
-    print("final shape of dataset: ", x.shape)
+    if verbose:
+        print("final shape of dataset: ", x.shape)
 
     x = normalize_layers(x, c, layer_boundaries)
 
@@ -496,3 +510,18 @@ def save_hlf(hlf, filename):
         pickle.dump(hlf, file)
     print("Saving file with high-level features DONE.")
 
+def generate_Einc_ds1(energy=None, sample_multiplier=1000):
+    ret = np.logspace(8, 18, 11, base=2)
+    ret = np.tile(ret, 10)
+    ret = np.array([
+        *ret,
+        *np.tile(2.0 ** 19, 5),
+        *np.tile(2.0 ** 20, 3),
+        *np.tile(2.0 ** 21, 2),
+        *np.tile(2.0 ** 22, 1),
+    ])
+    ret = np.tile(ret, sample_multiplier)
+    if energy is not None:
+        ret = ret[ret == energy]
+    np.random.shuffle(ret)
+    return ret

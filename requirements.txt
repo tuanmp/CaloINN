@@ -7,3 +7,5 @@ PyYAML==6.0.1
 scikit_learn==1.0.2
 scipy==1.13.0
 torch==1.13.1
+pytorch-lightning==1.9.5
+jsonargparse[signatures]==4.27.7

@@ -41,6 +41,7 @@ class Trainer:
             params.get('batch_size'),
             params.get('eps'),
             device,
+            shuffle=params.get("shuffle", True),
             width_noise=params.get("width_noise", 1e-7),
             energy=params.get("single_energy", None),
             u0up_cut=params.get("u0up_cut", 7.0),

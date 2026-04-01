@@ -1,14 +1,14 @@
 import math
 
-import torch
-import torch.nn as nn
 import FrEIA.framework as ff
 import FrEIA.modules as fm
+import numpy as np
+import torch
+import torch.nn as nn
 
 from myBlocks import *
 from vblinear import VBLinear
 
-import numpy as np
 
 class Subnet(nn.Module):
     """ This class constructs a subnet for the coupling blocks """
@@ -196,7 +196,7 @@ class CINN(nn.Module):
 
         self.initialize_normalization(data, cond)
         self.define_model_architecture(self.num_dim)
-        print(self.model)
+        # print(self.model)
 
     def forward(self, x, c, rev=False, jac=True):
         if self.log_cond:
@@ -205,6 +205,7 @@ class CINN(nn.Module):
             c_norm = c
         if self.pre_subnet:
             c_norm = self.pre_subnet(c_norm)
+
         return self.model.forward(x, c_norm, rev=rev, jac=jac)
 
     def get_layer_class(self, lay_params):
