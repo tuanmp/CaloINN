@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "caloinn"
 version = "0.1.0"
-description = "CaloINN project"
+description = "Invertible Neural Network for fast calorimeter shower generation in high-energy physics"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
