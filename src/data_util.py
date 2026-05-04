@@ -15,7 +15,7 @@ def load_data_calo(filename, layer_boundaries, energy=None):
         for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
             data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end][energy_mask.flatten()] / 1.e3
     else:
-        data["energy"] = data_file["incident_energies"][:] / 1.e3
+        data["energy"] = data_file["incident_energies"][:].reshape(-1, 1) / 1.e3
         #data["energy"] = data_file["incident_energies"][:] / 1.e3
         for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
             data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end] / 1.e3
@@ -24,7 +24,7 @@ def load_data_calo(filename, layer_boundaries, energy=None):
     
     return data
 
-def load_data(filename, particle_type,  xml_filename, threshold=1e-5, energy=None):
+def load_data(filename, particle_type,  xml_filename, threshold=1e-5, energy=None, max_samples=None):
     """Loads the data for a dataset 1 from the calo challenge"""
     
     # Create a XML_handler to extract the layer boundaries. (Geometric setup is stored in the XML file)
@@ -42,14 +42,21 @@ def load_data(filename, particle_type,  xml_filename, threshold=1e-5, energy=Non
     #data["energy"] = data_file["incident_energies"][:] / 1.e3
     if energy is not None:
         energy_mask = data_file["incident_energies"][:] == energy
-        data["energy"] = data_file["incident_energies"][:][energy_mask].reshape(-1, 1) / 1.e3
+        energies = data_file["incident_energies"][:][energy_mask].reshape(-1, 1)
+        if max_samples is not None and max_samples > 0 and max_samples < len(energies):
+            energies = energies[:max_samples]
+        data["energy"] = energies / 1.e3
         print(energy_mask.shape)
         for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
-            data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end][energy_mask.flatten()] / 1.e3
+            layer = data_file["showers"][..., layer_start:layer_end][energy_mask.flatten()]
+            if max_samples is not None and max_samples > 0 and max_samples < len(layer):
+                layer = layer[:max_samples]
+            data[f"layer_{layer_index}"] = layer / 1.e3
     else:
-        data["energy"] = data_file["incident_energies"][:] / 1.e3
+        stop = max_samples if (max_samples is not None and max_samples > 0) else None
+        data["energy"] = data_file["incident_energies"][:stop].reshape(-1, 1) / 1.e3
         for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
-            data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end] / 1.e3
+            data[f"layer_{layer_index}"] = data_file["showers"][:stop, layer_start:layer_end] / 1.e3
         print(data[f"layer_{layer_index}"].shape)
     data_file.close()
     
@@ -79,6 +86,8 @@ def get_energy_and_sorted_layers(data):
 
 def save_data(data, filename):
     """Saves the data with the same format as dataset 1 from the calo challenge"""
+
+    print(f"Saving data to {filename}")
     
     # extract the needed data
     incident_energies, layers = get_energy_and_sorted_layers(data)
@@ -415,16 +424,25 @@ def save_hlf(hlf, filename):
         pickle.dump(hlf, file)
     print("Saving file with high-level features DONE.")
 
-def get_loaders(filename, xml_filename, particle_type, val_frac, batch_size, 
-                eps=1.e-10, device='cpu', drop_last=False, shuffle=True, 
-                width_noise=0.0, energy=None, u0up_cut=7.0, u0low_cut=0.0, rew=1.0, dep_cut=0.0):
+def get_loaders(filename, xml_filename, particle_type, val_frac, batch_size,
+                eps=1.e-10, device='cpu', drop_last=False, shuffle=True,
+                width_noise=0.0, max_samples=None, energy=None, u0up_cut=7.0, u0low_cut=0.0, rew=1.0, dep_cut=0.0):
     """Creates the dataloaders used to train the VAE model."""
     
     # load the data from the hdf5 file
-    data, layer_boundaries = load_data(filename, particle_type, xml_filename=xml_filename, energy=energy)
+    data, layer_boundaries = load_data(
+        filename,
+        particle_type,
+        xml_filename=xml_filename,
+        energy=energy,
+        max_samples=max_samples,
+    )
 
     # preprocess the data and append the extra dims
     x, c = preprocess(data, layer_boundaries, eps, u0up_cut=u0up_cut, u0low_cut=u0low_cut, rew=rew, dep_cut=dep_cut)
+
+    approx_mem_mb = (x.nbytes + c.nbytes) / 1024**2
+    print(f"preprocessed arrays memory ~ {approx_mem_mb:.1f} MB before torch conversion")
 
     # Create an index array, used for splitting into train and val set
     number_of_samples = len(x)

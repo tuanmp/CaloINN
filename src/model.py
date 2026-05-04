@@ -1,14 +1,14 @@
 import math
 
-import torch
-import torch.nn as nn
 import FrEIA.framework as ff
 import FrEIA.modules as fm
+import numpy as np
+import torch
+import torch.nn as nn
 
 from myBlocks import *
 from vblinear import VBLinear
 
-import numpy as np
 
 class Subnet(nn.Module):
     """ This class constructs a subnet for the coupling blocks """
@@ -196,7 +196,6 @@ class CINN(nn.Module):
 
         self.initialize_normalization(data, cond)
         self.define_model_architecture(self.num_dim)
-        print(self.model)
 
     def forward(self, x, c, rev=False, jac=True):
         if self.log_cond:
@@ -249,11 +248,11 @@ class CINN(nn.Module):
                 else:
                     layer_class.append(nn.Linear)
                 layer_args.append(dicts)
-        #if "prior_prec" in params:
+        # if "prior_prec" in params:
         #    layer_args["prior_prec"] = params["prior_prec"]
-        #if "std_init" in params:
+        # if "std_init" in params:
         #    layer_args["std_init"] = params["std_init"]
-        #if "bias" in params:
+        # if "bias" in params:
         #    layer_args["bias"] = params["bias"]
         def func(x_in, x_out):
             subnet = Subnet(
@@ -344,27 +343,29 @@ class CINN(nn.Module):
         cond_node = ff.ConditionNode(1, name="cond")
 
         if self.use_norm:
-                nodes.append(ff.Node(
-                [nodes[-1].out0],
-                NormTransformation,
-                {"log_cond": self.log_cond},
-                conditions = cond_node,
-                name = "norm"
-            ))
+            nodes.append(
+                ff.Node(
+                    [nodes[-1].out0],
+                    NormTransformation,
+                    {"log_cond": self.log_cond},
+                    conditions=cond_node,
+                    name="norm",
+                )
+            )
         nodes.append(ff.Node(
             [nodes[-1].out0],
             LogTransformation,
             { "alpha": self.alpha, "alpha_logit": self.alpha_logit },
             name = "inp_log"
         ))
-        #nodes.append(ff.Node(
+        # nodes.append(ff.Node(
         #    [nodes[-1].out0],
         #    fm.FixedLinearTransform,
         #    { "M": self.norm_m, "b": self.norm_b },
         #    name = "inp_norm"
-        #))
+        # ))
         CouplingBlock, block_kwargs = self.get_coupling_block(self.params)
- 
+
         for i in range(self.params.get("n_blocks", 10)):
             if self.params.get("norm", True) and i!=0:
                 nodes.append(
@@ -384,7 +385,7 @@ class CINN(nn.Module):
                     name = f"block_{i}"
                 )
             )
-         
+
         nodes.append(ff.OutputNode([nodes[-1].out0], name='out'))
         nodes.append(cond_node)
 
@@ -435,6 +436,7 @@ class CINN(nn.Module):
             size=(num_pts*condition.shape[0], self.in_dim),
             device=next(self.parameters()).device)
         c = condition.repeat(num_pts,1)
+        # print(z.shape, c.shape)
         x, _ = self.forward(z, c, rev=True)
         return x.reshape(num_pts, condition.shape[0], self.in_dim).permute(1,0,2)
 

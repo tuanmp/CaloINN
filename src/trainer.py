@@ -1,16 +1,17 @@
 import sys
 import time
 
+import h5py
+import numpy as np
 import torch
 import torch.distributions as dist
-import numpy as np
-
-import data_util
-from model import CINN
-import plotting
-from plotter import Plotter
 
 import caloch_eval.evaluate as evaluate
+import data_util
+import plotting
+from model import CINN
+from plotter import Plotter
+from tqdm import tqdm
 
 class LogUniform(dist.TransformedDistribution):
     def __init__(self, lb, ub):
@@ -42,6 +43,7 @@ class Trainer:
             params.get('eps'),
             device,
             width_noise=params.get("width_noise", 1e-7),
+            # max_samples=params.get("max_samples", None),
             energy=params.get("single_energy", None),
             u0up_cut=params.get("u0up_cut", 7.0),
             u0low_cut=params.get("u0low_cut", 0.0),
@@ -57,11 +59,19 @@ class Trainer:
         self.num_dim = train_loader.data.shape[1]
 
         data = torch.clone(train_loader.data)
-        #if self.params.get("extra_dim_w_noise", False):
+        cond = torch.clone(train_loader.cond)
+
+        if self.params.get("max_samples") is not None:
+            rand_idx = torch.randperm(data.shape[0])[: self.params["max_samples"]]
+            data = data[rand_idx]
+            cond = cond[rand_idx]
+
+            print(f"Using a subset of the training data: {data.shape[0]} samples out of {train_loader.data.shape[0]}")
+        # if self.params.get("extra_dim_w_noise", False):
         #    data[:,:-1] = train_loader.add_noise(data[:,:-1])
-        #elif self.params.get("extra_dims_w_noise", False):
-        #data[:,-4:] = train_loader.add_noise(data[:,-4:])
-        #else:
+        # elif self.params.get("extra_dims_w_noise", False):
+        # data[:,-4:] = train_loader.add_noise(data[:,-4:])
+        # else:
         if params.get("custom_noise"):
             q = self.eval_quantiles(data)
             self.q = q
@@ -71,7 +81,6 @@ class Trainer:
         else:
             data = data
             self.q = torch.tensor(self.params.get("width_noise", 1e-7), device=self.device)
-        cond = torch.clone(train_loader.cond)
 
         model = CINN(params, data, cond)
         self.model = model.to(device)
@@ -215,13 +224,13 @@ class Trainer:
                 print(f'maximum logsig2_w: {max_logsig2_w}')
             print(f'maximum gradient: {max_grad}')
             sys.stdout.flush()
-            
-            #if test_inn_loss < best_test_loss:
+
+            # if test_inn_loss < best_test_loss:
             #    best_test_loss = test_inn_loss
             #    self.save("_best_inn")
 
-            #ep_diff = epoch - best_epoch
-            #if test_loss < best_total_loss and ep_diff>10:
+            # ep_diff = epoch - best_epoch
+            # if test_loss < best_total_loss and ep_diff>10:
             #    best_epoch = epoch
             #    best_total_loss = test_loss
             #    self.save("_best_total")
@@ -251,9 +260,9 @@ class Trainer:
                     self.plot_default_from_caloch(
                             sample_name='samples.hdf5', eval_name=f'{epoch}', cut=0.0
                             )
-        #save the final model
+        # save the final model
         self.save('_last')
- 
+
     def set_optimizer(self, steps_per_epoch=1, no_training=False, params=None):
         """ Initialize optimizer and learning rate scheduling """
         if params is None:
@@ -324,13 +333,12 @@ class Trainer:
         state_dicts = torch.load(name, map_location=self.device)
         self.model.load_state_dict(state_dicts["net"])
 
-        #self.losses_test = state_dicts.get("losses", {})
-        #self.learning_rates = state_dicts.get("learning_rates", [])
-        #self.epoch = state_dicts.get("epoch", 0)
-        #self.optim.load_state_dict(state_dicts["opt"])
+        # self.losses_test = state_dicts.get("losses", {})
+        # self.learning_rates = state_dicts.get("learning_rates", [])
+        # self.epoch = state_dicts.get("epoch", 0)
+        # self.optim.load_state_dict(state_dicts["opt"])
         self.model.to(self.device)
 
-	   
     def generate_Einc_ds1(self, energy=None, sample_multiplier=1000):
         """ generate the incident energy distribution of CaloChallenge ds1 
 			sample_multiplier controls how many samples are generated: 10* sample_multiplier for low energies,
@@ -345,39 +353,54 @@ class Trainer:
             ret = ret[ret==energy]
         np.random.shuffle(ret)
         return ret 
-    
-    def generate(self, num_samples, batch_size = 1000):
-        """
-            generate new data using the modle and storing them to a file in the run folder.
 
-            Parameters:
-            num_samples (int): Number of samples to generate, only used for ds2
-            batch_size (int): Batch size for samlpling
+    def generate(self, num_samples, single_energy=None, batch_size=1000):
         """
+        Generate new data using the model and store it to a file in the run folder.
+        By default, conditioning energies are read from the validation dataset.
+
+        Parameters:
+        num_samples (int): Optional cap on number of sampled validation energies.
+        batch_size (int): Batch size for sampling.
+        """
+        if single_energy is not None:
+            return self.generate_single_energy(
+                num_samples=num_samples, energy=single_energy, batch_size=batch_size
+            )
+
+        val_data_path = self.params.get("val_data_path")
+        if val_data_path is None:
+            raise ValueError("Parameter 'val_data_path' is required for generation.")
+        
+        print(f"Loading validation energies from {val_data_path} for generation.")
+        with h5py.File(val_data_path, "r") as data_file:
+            energies_np = data_file["incident_energies"][:].reshape(-1, 1) / 1e3
+            print(f"Loaded {len(energies_np)} validation energies for generation.")
+        if num_samples is not None and num_samples > 0 and num_samples < len(energies_np):
+            sample_idx = np.random.choice(len(energies_np), size=num_samples, replace=False)
+            energies_np = energies_np[sample_idx]
+
         self.model.eval()
-        #self.model.enable_map()
+        print(f"Generating samples in batches of {batch_size}...")
         with torch.no_grad():
-            if self.params.get('eval_dataset') == "2":
-                logunif = LogUniform(torch.tensor(1e3), torch.tensor(1e6))
-                energies = logunif.sample((num_samples,1))/1e3
-            else:
-                energies = (torch.tensor(self.generate_Einc_ds1(energy=self.single_energy, sample_multiplier=1000), dtype=torch.float)/1e3).reshape(-1, 1)
-            samples = torch.zeros((energies.shape[0],1,self.num_dim))
+            energies = torch.tensor(energies_np, dtype=torch.float)
+            samples = torch.zeros((energies.shape[0], 1, self.num_dim))
             num_samples = energies.shape[0]
             times = []
-            for batch in range((num_samples+batch_size-1)//batch_size):
-                    #self.model.reset_random()
-                    start = batch_size*batch
-                    stop = min(batch_size*(batch+1), num_samples)
-                    energies_l = energies[start:stop].to(self.device)
-                    t1 = time.time()
-                    samples[start:stop] = self.model.sample(1, energies_l)
-                    t_diff = time.time() - t1
-                    times.append( t_diff/(stop-start) )
+            for batch in tqdm(range((num_samples+batch_size-1)//batch_size)):
+                # self.model.reset_random()
+                start = batch_size * batch
+                stop = min(batch_size * (batch + 1), num_samples)
+                energies_l = energies[start:stop].to(self.device)
+                t1 = time.time()
+                samples[start:stop] = self.model.sample(1, energies_l)
+                t_diff = time.time() - t1
+                times.append(t_diff / (stop - start))
             self.avg_gen_time[str(batch_size)] = np.array(times).mean() 
             samples = samples[:,0,...].cpu().numpy()
             energies = energies.cpu().numpy()
         samples -= self.params.get("width_noise", 1e-7)
+        print(f"Generated {samples.shape[0]} samples. Saving to file...")
         data_util.save_data(
             data = data_util.postprocess(
                 samples,
@@ -389,6 +412,7 @@ class Trainer:
             ),
             filename = self.doc.get_file('samples.hdf5')
         )
+        print(f"Saved generated samples to file. {self.doc.get_file('samples.hdf5')}")
         data = data_util.postprocess(
                 samples,
                 energies,
@@ -399,13 +423,294 @@ class Trainer:
             )
         return data
 
-    def latent_samples(self, epoch=None):
+    def generate_from_latent(self, latent_input_path, num_samples=None, batch_size=1000):
+        """Decode samples from provided latent features and incident energies.
+
+        Expected input HDF5 keys:
+        - latent_features: shape (N, latent_dim)
+        - incident_energies: shape (N,) or (N, 1), in MeV
+        """
+        print(f"Loading latent input from {latent_input_path}")
+        with h5py.File(latent_input_path, "r") as data_file:
+            if "latent_features" not in data_file or "incident_energies" not in data_file:
+                raise ValueError(
+                    "Input file must contain datasets 'latent_features' and 'incident_energies'."
+                )
+            latent_np = data_file["latent_features"][:]
+            energies_np = data_file["incident_energies"][:]
+
+        if latent_np.ndim != 2:
+            raise ValueError(
+                f"Expected latent_features with shape (N, D), got shape {latent_np.shape}."
+            )
+        if energies_np.ndim == 1:
+            energies_np = energies_np.reshape(-1, 1)
+        elif not (energies_np.ndim == 2 and energies_np.shape[1] == 1):
+            raise ValueError(
+                "Expected incident_energies with shape (N,) or (N, 1)."
+            )
+
+        if latent_np.shape[0] != energies_np.shape[0]:
+            raise ValueError(
+                "Mismatch between latent_features and incident_energies lengths: "
+                f"{latent_np.shape[0]} != {energies_np.shape[0]}"
+            )
+        if latent_np.shape[1] != self.num_dim:
+            raise ValueError(
+                f"Unexpected latent dimension {latent_np.shape[1]} (expected {self.num_dim})."
+            )
+        if not np.isfinite(latent_np).all() or not np.isfinite(energies_np).all():
+            raise ValueError("Input latent or energy arrays contain non-finite values.")
+
+        total_events = latent_np.shape[0]
+        if total_events == 0:
+            raise ValueError("Input file contains zero events.")
+
+        if num_samples is not None and num_samples > 0 and num_samples < total_events:
+            sample_idx = np.random.choice(total_events, size=num_samples, replace=False)
+            latent_np = latent_np[sample_idx]
+            energies_np = energies_np[sample_idx]
+
+        energies_np = energies_np / 1.0e3
+        print(
+            f"Decoding {latent_np.shape[0]} events from latent dim {latent_np.shape[1]} "
+            "with energies converted from MeV to GeV."
+        )
+
+        self.model.eval()
+        with torch.no_grad():
+            latent = torch.tensor(latent_np, dtype=torch.get_default_dtype())
+            energies = torch.tensor(energies_np, dtype=torch.get_default_dtype())
+            samples = torch.zeros((latent.shape[0], 1, self.num_dim), dtype=torch.get_default_dtype())
+            num_events = latent.shape[0]
+            times = []
+
+            for batch in tqdm(range((num_events + batch_size - 1) // batch_size)):
+                start = batch_size * batch
+                stop = min(batch_size * (batch + 1), num_events)
+                z_l = latent[start:stop].to(self.device)
+                energies_l = energies[start:stop].to(self.device)
+                t1 = time.time()
+                decoded_batch, _ = self.model(z_l, energies_l, rev=True)
+                samples[start:stop, 0] = decoded_batch.detach().cpu()
+                t_diff = time.time() - t1
+                times.append(t_diff / (stop - start))
+
+            self.avg_gen_time[str(batch_size)] = np.array(times).mean()
+            samples = samples[:, 0, ...].cpu().numpy()
+            energies = energies.cpu().numpy()
+
+        samples -= self.params.get("width_noise", 1e-7)
+        print(f"Decoded {samples.shape[0]} samples. Saving to file...")
+        data_util.save_data(
+            data=data_util.postprocess(
+                samples,
+                energies,
+                layer_boundaries=self.layer_boundaries,
+                threshold=self.params.get("width_noise", 1e-7),
+                quantiles=self.q.cpu().numpy(),
+            ),
+            filename=self.doc.get_file("samples.hdf5"),
+        )
+        print(f"Saved decoded samples to file. {self.doc.get_file('samples.hdf5')}")
+
+        data = data_util.postprocess(
+            samples,
+            energies,
+            layer_boundaries=self.layer_boundaries,
+            threshold=self.params.get("width_noise", 1e-7),
+            quantiles=self.q.cpu().numpy(),
+        )
+        return data
+
+    def generate_latent(self, num_samples, single_energy=None, batch_size=1000, model_label=None):
+        """Encode validation showers into latent-space features and save them.
+
+        Uses the same loader initialization logic as in Trainer.__init__, with
+        val_frac=0.0 so all events from val_data_path are used in one loader.
+
+        Parameters:
+        num_samples (int): Optional cap on number of validation events used.
+        single_energy (float): Optional log2 energy value used to filter validation events.
+        batch_size (int): Batch size for latent encoding.
+        """
+        val_data_path = self.params.get('val_data_path')
+        if not val_data_path:
+            raise ValueError("Parameter 'val_data_path' must be set for latent generation.")
+
+        print("Initializing latent loader from validation file...")
+        latent_loader, _, layer_boundaries = data_util.get_loaders(
+            val_data_path,
+            self.params.get('xml_path'),
+            self.params.get('xml_ptype'),
+            0.0,
+            batch_size,
+            self.params.get('eps'),
+            self.device,
+            width_noise=self.params.get("width_noise", 1e-7),
+            energy=self.params.get("single_energy", None),
+            u0up_cut=self.params.get("u0up_cut", 7.0),
+            u0low_cut=self.params.get("u0low_cut", 0.0),
+            rew=self.params.get("pt_rew", 1.0),
+            dep_cut=self.params.get("dep_cut", 1e10),
+        )
+
+        print(f"Loaded {len(latent_loader.data)} validation events from HDF5.")
+
+        target_tensor = None
+        if single_energy is not None:
+            target_energy_tev = (2 ** single_energy) / 1e3
+            target_tensor = torch.tensor(
+                target_energy_tev,
+                dtype=latent_loader.cond.dtype,
+                device=latent_loader.cond.device,
+            )
+
+        # Encode to latent space by iterating directly over dataloader batches
+        print(f"Encoding validation events using dataloader batches (batch_size={batch_size})...")
+        self.model.eval()
+        latent_chunks = []
+        energy_chunks = []
+        encoded_count = 0
+        target_count = num_samples if (num_samples is not None and num_samples > 0) else None
+
+        with torch.no_grad():
+            for x_batch, c_batch in tqdm(latent_loader, total=len(latent_loader)):
+                if target_tensor is not None:
+                    energy_mask = torch.isclose(
+                        c_batch.reshape(-1), target_tensor, rtol=1e-6, atol=1e-9
+                    )
+                    x_batch = x_batch[energy_mask]
+                    c_batch = c_batch[energy_mask]
+                    if len(c_batch) == 0:
+                        continue
+
+                if target_count is not None:
+                    remaining = target_count - encoded_count
+                    if remaining <= 0:
+                        break
+                    if len(c_batch) > remaining:
+                        x_batch = x_batch[:remaining]
+                        c_batch = c_batch[:remaining]
+
+                x_batch = x_batch.to(self.device)
+                c_batch = c_batch.to(self.device)
+                latent_batch = self.model(x_batch, c_batch)[0]
+                latent_chunks.append(latent_batch.detach().cpu().numpy())
+                energy_chunks.append(c_batch.detach().cpu().numpy())
+                encoded_count += len(c_batch)
+
+        if len(latent_chunks) == 0:
+            if single_energy is not None:
+                raise ValueError("No validation events left after single-energy filtering.")
+            raise ValueError("No validation events were encoded into latent features.")
+
+        latent_features = np.concatenate(latent_chunks, axis=0)
+        if latent_features.shape[1] != self.num_dim:
+            raise ValueError(
+                f"Unexpected latent dimension {latent_features.shape[1]} (expected {self.num_dim})."
+            )
+
+        incident_energies_gev = np.concatenate(energy_chunks, axis=0) * 1.0e3
+        
+        output_file = self.doc.get_file("latent_features.hdf5")
+        with h5py.File(output_file, "w") as save_file:
+            save_file.create_dataset("incident_energies", data=incident_energies_gev)
+            save_file.create_dataset("latent_features", data=latent_features)
+        
+        print(f"Saved latent features to file: {output_file}")
+
+        # Save latent validation plots to a dedicated path (separate from training latent plots)
+        latent_validation_dir = self.doc.get_file("latent_validation")
+        plotting.plot_latent(latent_features, latent_validation_dir)
+        print(f"Saved latent validation plots to directory: {latent_validation_dir}/latent")
+
+        # Also validate latent distribution on trainset at the loaded checkpoint.
+        # Save this check in a separate location from training-time latent plots.
+        latent_trainset_check_dir = self.doc.get_file("latent_trainset_check")
+        epoch_for_check = None
+        if model_label is not None:
+            label = str(model_label).strip()
+            if label.startswith("_"):
+                label = label[1:]
+            if label.isdigit():
+                epoch_for_check = int(label)
+        self.latent_samples(epoch=epoch_for_check, results_dir=latent_trainset_check_dir)
+        print(
+            "Saved trainset latent check plots to directory: "
+            f"{latent_trainset_check_dir}/latent"
+        )
+
+    def generate_single_energy(self, num_samples, energy, batch_size=1000):
+        """
+        generate new data using the modle and storing them to a file in the run folder.
+
+        Parameters:
+        num_samples (int): Number of samples to generate, only used for ds2
+        batch_size (int): Batch size for samlpling
+        """
+        self.model.eval()
+        # self.model.enable_map()
+        with torch.no_grad():
+            # if self.params.get('eval_dataset') == "2":
+            #     logunif = LogUniform(torch.tensor(1e3), torch.tensor(1e6))
+            #     energies = logunif.sample((num_samples,1))/1e3
+            # else:
+            #     energies = (torch.tensor(self.generate_Einc_ds1(energy=self.single_energy, sample_multiplier=1000), dtype=torch.float)/1e3).reshape(-1, 1)
+            energies = torch.tensor([energy] * num_samples, dtype=torch.float).reshape(
+                -1, 1
+            )
+            energies = 2**energies / 1e3
+            samples = torch.zeros((energies.shape[0], 1, self.num_dim))
+            num_samples = energies.shape[0]
+            times = []
+            for batch in tqdm(range((num_samples + batch_size - 1) // batch_size)):
+                # self.model.reset_random()
+                start = batch_size * batch
+                stop = min(batch_size * (batch + 1), num_samples)
+                energies_l = energies[start:stop].to(self.device)
+                t1 = time.time()
+                samples[start:stop] = self.model.sample(1, energies_l)
+                t_diff = time.time() - t1
+                times.append(t_diff / (stop - start))
+            self.avg_gen_time[str(batch_size)] = np.array(times).mean()
+            samples = samples[:, 0, ...].cpu().numpy()
+            energies = energies.cpu().numpy()
+        samples -= self.params.get("width_noise", 1e-7)
+        data_util.save_data(
+            data=data_util.postprocess(
+                samples,
+                energies,
+                layer_boundaries=self.layer_boundaries,
+                threshold=self.params.get("width_noise", 1e-7),
+                quantiles=self.q.cpu().numpy(),
+                # rew=self.params.get("pt_rew", 1.0)
+            ),
+            filename=self.doc.get_file("samples.hdf5"),
+        )
+        print(f"Saved generated samples to file. {self.doc.get_file('samples.hdf5')}")
+        print(f"generated samples shape: {samples.shape}, energies shape: {energies.shape}")
+        data = data_util.postprocess(
+            samples,
+            energies,
+            layer_boundaries=self.layer_boundaries,
+            threshold=self.params.get("width_noise", 1e-7),
+            quantiles=self.q.cpu().numpy(),
+            # rew=self.params.get("pt_rew", 1.0)
+        )
+
+        return data
+
+    def latent_samples(self, epoch=None, results_dir=None):
         """
             Plot latent space distribution. 
 
             Parameters:
             epoch (int): current epoch
         """
+        if results_dir is None:
+            results_dir = self.doc.basedir
+
         self.model.eval()
         with torch.no_grad():
             samples = torch.zeros(self.train_loader.data.shape)
@@ -415,14 +720,14 @@ class Trainer:
                 stop += len(x)
                 samples[start:stop] = self.model(x,c)[0].cpu()
             samples = samples.numpy()
-        plotting.plot_latent(samples, self.doc.basedir, epoch)
+        plotting.plot_latent(samples, results_dir, epoch)
 
     def plot_default_from_caloch(self, sample_name='samples.hdf5', eval_name='final', cut=1.515e-3):
         """
         Run the default evaluation script for a single saved sample
         It runs the full CaloChallenge evaluation pipeline
         """
-        evaluate.main(f"-i {self.doc.basedir}/{sample_name} -r {self.params['val_data_path']} -m all -d {self.params['eval_dataset']} --output_dir {self.doc.basedir}/eval/{eval_name}/ --cut 1.515e-3".split())
+        evaluate.main(f"-i {self.doc.basedir}/{sample_name} --binning_file {self.params['xml_path']} -r {self.params['val_data_path']} -m no-cls -d {self.params['eval_dataset']} --output_dir {self.doc.basedir}/eval/{eval_name}/ --cut 1.515e-3".split())
 
     def plot_uncertaintys(self, plot_params, num_samples=100000, num_rand=30, batch_size = 10000):
         """
@@ -446,10 +751,10 @@ class Trainer:
                 energies = 1.0e3*torch.rand((num_samples,1)) + 0.256
                 samples = torch.zeros((num_samples,1,self.num_dim))
                 for batch in range((num_samples+batch_size-1)//batch_size):
-                        start = batch_size*batch
-                        stop = min(batch_size*(batch+1), num_samples)
-                        energies_l = energies[start:stop].to(self.device)
-                        samples[start:stop] = self.model.sample(1, energies_l).cpu()
+                    start = batch_size * batch
+                    stop = min(batch_size * (batch + 1), num_samples)
+                    energies_l = energies[start:stop].to(self.device)
+                    samples[start:stop] = self.model.sample(1, energies_l).cpu()
                 samples = samples[:,0,...].cpu().numpy()
                 energies = energies.cpu().numpy()
             samples -= self.params.get("width_noise", 1e-7)

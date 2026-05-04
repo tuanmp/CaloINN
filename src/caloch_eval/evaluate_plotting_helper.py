@@ -9,8 +9,9 @@
 
 import os
 from itertools import product
-import numpy as np
+
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib import cm
 from matplotlib.backends.backend_pdf import PdfPages
 
@@ -18,7 +19,40 @@ dup = lambda a: np.append(a, a[-1])
 
 # settings for the various plots. These should be larger than the number of hlf files
 colors = ["tab:blue", "tab:orange"]
-labels = ["INN", "VAE+INN"]
+_DEFAULT_MODEL_LABELS = ["INN", "VAE+INN"]
+
+
+class _PlotLabelList(list):
+    """List wrapper with safe fallback labels for missing indices."""
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return list(super().__getitem__(index))
+        if index >= len(self):
+            return f"Model {index + 1}"
+        value = super().__getitem__(index)
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value if value else None
+
+
+labels = _PlotLabelList(_DEFAULT_MODEL_LABELS)
+
+
+def set_model_labels(model_labels=None):
+    """Update plot legend labels for model inputs."""
+    global labels
+    if model_labels is None or len(model_labels) == 0:
+        labels = _PlotLabelList(_DEFAULT_MODEL_LABELS)
+    else:
+        labels = _PlotLabelList(model_labels)
+
+
+def get_model_labels(n_models):
+    """Return n model labels with safe fallback names."""
+    return [labels[i] for i in range(n_models)]
+
 #colors = ["tab:orange"]
 #labels = ["VAE+INN"]
 
@@ -26,6 +60,14 @@ plt.rc("font", family="serif", size=20)
 plt.rc("axes", titlesize="medium")
 plt.rc("text.latex", preamble=r"\usepackage{amsmath}")
 plt.rc("text", usetex=True)
+
+
+def _get_target_energies(energy_array, dataset):
+    """Return stable target energies for plotting."""
+    flat_energy = np.asarray(energy_array).reshape(-1)
+    if dataset in ['1-photons', '1-pions']:
+        return np.sort(np.unique(np.rint(flat_energy)))
+    return np.sort(np.unique(flat_energy))
  
 def plot_layer_comparison(hlf_class, data, reference_class, reference_data, arg, show=False):
     """ plots showers of of data and reference next to each other, for comparison """
@@ -56,59 +98,88 @@ def plot_layer_comparison(hlf_class, data, reference_class, reference_data, arg,
 
 def plot_Etot_Einc_discrete(hlf_class, reference_class, arg, p_label):
     """ plots Etot normalized to Einc histograms for each Einc in ds1 """
-    # hardcode boundaries?
-    bins = np.linspace(0.4, 1.4, 21)
-    plt.figure(figsize=(10, 10))
-    target_energies = 2**np.linspace(8, 23, 16)
-    for i in range(len(target_energies)-1):
-        if i > 3 and 'photons' in arg.dataset:
-            bins = np.linspace(0.9, 1.1, 21)
-        energy = target_energies[i]
-        which_showers_ref = ((reference_class.Einc.squeeze() >= target_energies[i]) & \
-                             (reference_class.Einc.squeeze() < target_energies[i+1])).squeeze()
-        which_showers_hlf = ((hlf_class.Einc.squeeze() >= target_energies[i]) & \
-                             (hlf_class.Einc.squeeze() < target_energies[i+1])).squeeze()
-        ax = plt.subplot(4, 4, i+1)
-        counts_ref, _, _ = ax.hist(reference_class.GetEtot()[which_showers_ref] /\
-                                   reference_class.Einc.squeeze()[which_showers_ref],
-                                   bins=bins, label='reference', linestyle='-', density=True,
-                                   histtype='stepfilled', alpha=0.2, linewidth=1.0, color=hlf_class.color)
-        counts_data, _, _ = ax.hist(hlf_class.GetEtot()[which_showers_hlf] /\
-                                    hlf_class.Einc.squeeze()[which_showers_hlf], bins=bins,
-                                    label='generated', histtype='step', linewidth=1.5, alpha=1.,
-                                    density=True, color=reference_class.color)
-        if i in [0, 1, 2]:
-            energy_label = 'E = {:.0f} MeV'.format(energy)
-        elif i in np.arange(3, 12):
-            energy_label = 'E = {:.1f} GeV'.format(energy/1e3)
-        else:
-            energy_label = 'E = {:.1f} TeV'.format(energy/1e6)
-        ax.text(0.95, 0.95, energy_label, ha='right', va='top',
-                transform=ax.transAxes)
-        ax.set_xlabel(r'$E_{\text{tot}} / E_{\text{inc}}$')
-        ax.xaxis.set_label_coords(1., -0.15)
-        ax.set_ylabel('counts')
-        ax.yaxis.set_ticklabels([])
-        plt.subplots_adjust(wspace=0.3, hspace=0.3)
-        seps = _separation_power(counts_ref, counts_data, bins)
-        print("Separation power of Etot / Einc at E = {} histogram: {}".format(energy, seps))
-        with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
-                  'a') as f:
-            f.write('Etot / Einc at E = {}: \n'.format(energy))
-            f.write(str(seps))
-            f.write('\n\n')
-        h, l = ax.get_legend_handles_labels()
-    ax = plt.subplot(4, 4, 16)
-    ax.legend(h, l, loc='center', fontsize=20)
-    ax.axis('off')
     filename = os.path.join(arg.output_dir, 'Etot_Einc_dataset_{}_E_i.pdf'.format(arg.dataset))
-    plt.savefig(filename, dpi=300, format='pdf')
-    plt.close()
+    target_energies = _get_target_energies(reference_class.Einc.squeeze(), arg.dataset)
+    n_targets = len(target_energies)
+    tolerance = getattr(arg, 'energy_tolerance', 1e-3)
+
+    if n_targets <= 0:
+        return
+
+    # Keep a 4x4 grid per page by plotting up to 15 histograms + 1 legend panel.
+    plots_per_page = 15
+
+    with PdfPages(filename) as pdf:
+        for page_start in range(0, n_targets, plots_per_page):
+            fig, axes = plt.subplots(4, 4, figsize=(10, 10))
+            axes = axes.flatten()
+            page_end = min(page_start + plots_per_page, n_targets)
+
+            h, l = None, None
+            for local_idx, i in enumerate(range(page_start, page_end)):
+                bins = np.linspace(0., 1.4, 56)
+                if i > 3 and 'photons' in arg.dataset:
+                    bins = np.linspace(0.9, 1.1, 21)
+
+                energy = target_energies[i]
+                which_showers_ref = np.abs(reference_class.Einc.squeeze() - energy) < tolerance
+                which_showers_hlf = np.abs(hlf_class.Einc.squeeze() - energy) < tolerance
+
+                if not np.any(which_showers_ref) or not np.any(which_showers_hlf):
+                    axes[local_idx].axis('off')
+                    continue
+
+                ax = axes[local_idx]
+                counts_ref, _, _ = ax.hist(reference_class.GetEtot()[which_showers_ref] /\
+                                        reference_class.Einc.squeeze()[which_showers_ref],
+                                        bins=bins, label='reference', linestyle='-', density=True,
+                                        histtype='stepfilled', alpha=0.2, linewidth=1.0, color=hlf_class.color)
+                counts_data, _, _ = ax.hist(hlf_class.GetEtot()[which_showers_hlf] /\
+                                            hlf_class.Einc.squeeze()[which_showers_hlf], bins=bins,
+                                            label='generated', histtype='step', linewidth=1.5, alpha=1.,
+                                            density=True, color=reference_class.color)
+
+                if energy < 1000:
+                    energy_label = 'E = {:.0f} MeV'.format(energy)
+                elif energy < 1.e6:
+                    energy_label = 'E = {:.1f} GeV'.format(energy/1e3)
+                else:
+                    energy_label = 'E = {:.1f} TeV'.format(energy/1e6)
+
+                ax.text(0.95, 0.95, energy_label, ha='right', va='top',
+                        transform=ax.transAxes)
+                ax.set_xlabel(r'$E_{\text{tot}} / E_{\text{inc}}$')
+                ax.xaxis.set_label_coords(1., -0.15)
+                ax.set_ylabel('counts')
+                ax.yaxis.set_ticklabels([])
+
+                seps = _separation_power(counts_ref, counts_data, bins)
+                print("Separation power of Etot / Einc at E = {} histogram: {}".format(energy, seps))
+                with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
+                        'a') as f:
+                    f.write('Etot / Einc at E = {}: \n'.format(energy))
+                    f.write(str(seps))
+                    f.write('\n\n')
+
+                if h is None:
+                    h, l = ax.get_legend_handles_labels()
+
+            for ax in axes[page_end - page_start:15]:
+                ax.axis('off')
+
+            legend_ax = axes[15]
+            if h is not None:
+                legend_ax.legend(h, l, loc='center', fontsize=20)
+            legend_ax.axis('off')
+
+            fig.subplots_adjust(wspace=0.3, hspace=0.3)
+            pdf.savefig(fig, dpi=300)
+            plt.close(fig)
 
 def plot_Etot_Einc(list_hlfs, reference_class, arg, p_label):
     """ plots Etot normalized to Einc histogram """
 
-    bins = np.linspace(0.5, 1.5, 31)
+    bins = np.linspace(0.2, 1.5, 40)
     fig, ax = plt.subplots(2,1, figsize=(5, 4.5), gridspec_kw = {"height_ratios": (4,1), "hspace": 0.0}, sharex = True)
         
     counts_ref, bins = np.histogram(reference_class.GetEtot() / reference_class.Einc.squeeze(), bins=bins, density=False)
@@ -148,10 +219,10 @@ def plot_Etot_Einc(list_hlfs, reference_class, arg, p_label):
     ax[1].set_ylabel(r'$\frac{\text{Model}}{\text{GEANT}}$')
     ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
     fig.tight_layout(pad=0.0, h_pad=0.0, w_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
-    if arg.mode in ['all', 'hist-p', 'hist']:
+    if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
         filename = os.path.join(arg.output_dir, 'Etot_Einc_dataset_{}.pdf'.format(arg.dataset))
         fig.savefig(filename, dpi=300, format='pdf')
-    if arg.mode in ['all', 'hist-chi', 'hist']:
+    if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
         seps = _separation_power(counts_ref_norm, counts_data_norm, None)
         print("Separation power of Etot / Einc histogram: {}".format(seps))
         with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
@@ -227,9 +298,9 @@ def plot_E_layers(list_classes, reference_class, arg, p_label, energy=None):
             ax[0].legend(loc='lower left', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
 
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
-            if arg.mode in ['all', 'hist-p', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
-            if arg.mode in ['all', 'hist-chi', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
                 seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of E layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
@@ -299,9 +370,9 @@ def plot_ECEtas(list_hlfs, reference_class, arg, p_label, energy=None):
             ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, title_fontsize=15, fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
 
-            if arg.mode in ['all', 'hist-p', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
-            if arg.mode in ['all', 'hist-chi', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
                 seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of EC Eta layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
@@ -371,9 +442,9 @@ def plot_ECPhis(list_hlfs, reference_class, arg, p_label, energy=None):
             ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, title_fontsize=15, fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
 
-            if arg.mode in ['all', 'hist-p', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
-            if arg.mode in ['all', 'hist-chi', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
                 seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of EC Phi layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
@@ -445,9 +516,9 @@ def plot_ECWidthEtas(list_hlfs, reference_class, arg, p_label, energy=None):
             ax[0].legend(loc='lower left', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
      
-            if arg.mode in ['all', 'hist-p', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
-            if arg.mode in ['all', 'hist-chi', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
                 seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of Width Eta layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
@@ -519,9 +590,9 @@ def plot_ECWidthPhis(list_hlfs, reference_class, arg, p_label, energy=None):
             ax[0].legend(loc='lower left', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
             fig.tight_layout(pad=0.0, w_pad=0.0, h_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
      
-            if arg.mode in ['all', 'hist-p', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
                 plt.savefig(pdf, dpi=300, format='pdf')
-            if arg.mode in ['all', 'hist-chi', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
                 seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of Width Phi layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)),
@@ -582,9 +653,9 @@ def plot_sparsity(list_hlfs, reference_class, arg, p_label, energy=None):
             ax[0].text(0.02, 0.92, energy, fontsize=15, transform=ax[0].transAxes)
             ax[0].legend(loc='best', frameon=False, title=p_label, handlelength=1.5, fontsize=15, title_fontsize=15)
             fig.tight_layout(pad=0.0, h_pad=0.0, w_pad=0.0, rect=(0.01, 0.01, 0.98, 0.98))
-            if arg.mode in ['all', 'hist-p', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
                 plt.savefig(pdf, format='pdf')
-            if arg.mode in ['all', 'hist-chi', 'hist']:
+            if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
                 seps = _separation_power(counts_ref_norm, counts_data_norm, None)
                 print("Separation power of Width Phi layer {} histogram: {}".format(key, seps))
                 with open(os.path.join(arg.output_dir, 'histogram_chi2_{}.txt'.format(arg.dataset)), 'a') as f:
@@ -642,11 +713,11 @@ def plot_cell_dist(list_showers, ref_shower_arr, arg, p_label):
     #plt.xlim(*lim)
     ax[0].legend(loc='best', frameon=False, title=p_label)
     fig.tight_layout()
-    if arg.mode in ['all', 'hist-p', 'hist']:
+    if arg.mode in ['all', 'no-cls', 'hist-p', 'hist']:
         filename = os.path.join(arg.output_dir,
                                 'voxel_energy_dataset_{}.pdf'.format(arg.dataset))
         plt.savefig(filename, dpi=300, format='pdf')
-    if arg.mode in ['all', 'hist-chi', 'hist']:
+    if arg.mode in ['all', 'no-cls', 'hist-chi', 'hist']:
         seps = _separation_power(counts_ref, counts_data, bins)
         print("Separation power of voxel distribution histogram: {}".format(seps))
         with open(os.path.join(arg.output_dir,
@@ -660,26 +731,46 @@ def plot_atlas_style(hlfs, reference_class, arg, p_label):
     """ plots histograms for all incident energies (atlas style plot)
     Also computes the Chi^2 values"""
 
+    target_energies = _get_target_energies(reference_class.Einc.squeeze(), arg.dataset)
+    n_targets = len(target_energies)
+    tolerance = getattr(arg, 'energy_tolerance', 1e-3)
+
+    if n_targets <= 0:
+        return
+
     if arg.dataset == '1-photons':
 
         bins_list = []
-        for i in range(15):
-            if i ==0 or i==1: bins = np.linspace(0.45, 1.3, 21)
-            elif i>=2 and i<=4: bins = np.linspace(0.73, 1.1, 21)
-            elif i>4 and i<= 6: bins = np.linspace(0.87,1.03,21)
-            elif i>6 and i<=9: bins = np.linspace(0.935,1.01, 21)
-            elif i>9: bins= np.linspace(0.935,0.998,11)
+        for i in range(n_targets):
+            if n_targets == 1:
+                i_legacy = 0
+            else:
+                i_legacy = int(round(i * 14.0 / (n_targets - 1)))
+
+            if i_legacy in [0, 1]:
+                bins = np.linspace(0.45, 1.3, 21)
+            elif i_legacy <= 4:
+                bins = np.linspace(0.73, 1.1, 21)
+            elif i_legacy <= 6:
+                bins = np.linspace(0.87, 1.03, 21)
+            elif i_legacy <= 9:
+                bins = np.linspace(0.935, 1.01, 21)
+            else:
+                bins = np.linspace(0.935, 0.998, 11)
 
             bins_list.append(bins)
+
 
     elif arg.dataset == '1-pions':
         # p_label = r'$\pi^{+}$ DS-1'
         bins_list = []
-        for i in range(15):
-            if i >=0 and i<4: bins = np.linspace(0, 1.5, 21)
-            elif i>=4 and i< 7: bins = np.linspace(0.4, 1.2, 21)
-            elif i>=7 and i< 12: bins = np.linspace(0.6,1.1,21)
-            elif i>=12: bins= np.linspace(0.7,1.1,11)
+        for _ in range(n_targets):
+            # if i >=0 and i<4: bins = np.linspace(0, 1.5, 21)
+            # elif i>=4 and i< 7: bins = np.linspace(0.4, 1.2, 21)
+            # elif i>=7 and i< 12: bins = np.linspace(0.6,1.1,21)
+            # elif i>=12: bins= np.linspace(0.7,1.1,11)
+
+            bins = np.linspace(-0.1, 1.3, 28)
 
             bins_list.append(bins)
 
@@ -689,117 +780,166 @@ def plot_atlas_style(hlfs, reference_class, arg, p_label):
     else:
         raise ValueError("No discrete incident energies for dataset 3")
 
-    fig, ax = plt.subplots(8, 5, figsize=(15,13.5), gridspec_kw={'height_ratios': [6,2,1,6,2,1,6,2], 'wspace':0, 'hspace':0.0})
-
-    # "-1" since the VAE energies are a little bit to low due to rounding errors. Since we are checking for
-    # imtervalls, it is no problem.
-    target_energies = 2**np.linspace(8, 23, 16) - 1
+    page_capacity = 15
     even_pairs = list(product((0,3,6), (0,1,2,3,4)))
-    odd_pairs = list(product((1,4,7),(0,1,2,3,4)))
-    fake_pairs = list(product((2,5),(0,1,2,3,4)))
-    for i in fake_pairs:
-        ax[i].remove()
-    for i in range(len(target_energies)-1):
-
-        bins=bins_list[i]
-        energy = target_energies[i]
-        even_pair = even_pairs[i]
-        odd_pair = odd_pairs[i]
-            
-        if i in [0, 1, 2]:
-            energy_label = 'E = {:.0f} MeV'.format(energy)
-        elif i in np.arange(3, 12):
-            energy_label = 'E = {:.1f} GeV'.format(energy/1e3)
-        else:
-            energy_label = 'E = {:.1f} TeV'.format(energy/1e6)
-
-        which_showers_ref = ((reference_class.Einc.squeeze() >= target_energies[i]) & \
-                             (reference_class.Einc.squeeze() < target_energies[i+1])).squeeze()
-
-        energy_ref = reference_class.GetEtot()[which_showers_ref] / reference_class.Einc.squeeze()[which_showers_ref]
-        counts_ref, bins = np.histogram(energy_ref, bins=bins, density=False)
-        counts_ref_norm = counts_ref/counts_ref.sum()
-        ref_error = counts_ref_norm/np.sqrt(counts_ref)
-
-        ax[even_pair].step(bins, dup(counts_ref_norm), color='k',
-                            label=energy_label, alpha=0.8, linewidth=1., linestyle='-', where='post')
-        ax[even_pair].fill_between(bins, dup(counts_ref_norm+ref_error), dup(counts_ref_norm-ref_error), step='post', color='k', alpha=0.2)
-
-        for n, hlf in enumerate(hlfs):
-            which_showers = ((hlf.Einc.squeeze() >= target_energies[i]) & \
-                             (hlf.Einc.squeeze() < target_energies[i+1])).squeeze()
-
-            energy_n = hlf.GetEtot()[which_showers] / hlf.Einc.squeeze()[which_showers]
-
-            counts_n, bins = np.histogram(energy_n, bins=bins, density=False)
-            counts_n_norm = counts_n/counts_n.sum()
-            error_n = counts_n_norm/np.sqrt(counts_n)
-            
-            if i in [0, 1, 2]:
-                energy_label = '$E_\\text{{inc}}$={:.0f} MeV'.format(energy)
-            elif i in np.arange(3, 12):
-                energy_label = '$E_\\text{{inc}}$={:.1f} GeV'.format(energy/1e3)
-            else:
-                energy_label = '$E_\\text{{inc}}$={:.1f} TeV'.format(energy/1e6)
-
-
-            ax[even_pair].step(bins, dup(counts_n_norm), color=colors[n],
-                               label=energy_label, alpha=0.8, linewidth=1., linestyle='-', where='post')
-            ax[even_pair].fill_between(bins, dup(counts_n_norm+error_n), dup(counts_n_norm-error_n), step='post', color=colors[n], alpha=0.2)
-
-            ratio_data = counts_n_norm / counts_ref_norm
-            ax[odd_pair].step(bins, dup(ratio_data), linewidth=1.0, alpha=1.0, color=colors[n], where='post')
-            ax[odd_pair].fill_between(bins, dup(ratio_data-error_n/counts_ref_norm), dup(ratio_data+error_n/counts_ref_norm), step='post', color=colors[n], alpha=0.2)
-
-        ax[odd_pair].hlines(1.0, bins[0], bins[-1], linewidth=1.0, alpha=0.8, linestyle='-', color='k')
-        ax[odd_pair].axhline(0.7, c='k', ls='--', lw=0.5)
-        ax[odd_pair].axhline(1.3, c='k', ls='--', lw=0.5)
-
-        ax[odd_pair].fill_between(bins, dup(1-ref_error/counts_ref_norm), dup(1+ref_error/counts_ref_norm), step='post', color='k', alpha=0.2 )
-
-        energy = energy+1
-        
-        ax[even_pair].set_xlim(bins[0], bins[-1])
-        ax[odd_pair].set_xlim(bins[0], bins[-1])
-        ax[odd_pair].set_ylim(0.5, 1.5)
-        ax[odd_pair].set_yticks((0.7, 1.3))
-
-        ax[even_pair].set_yticks([])
-        ax[even_pair].set_xticks([])
-        ax[odd_pair].set_yticks([])
-
-        if odd_pair[1]==0:
-            ax[odd_pair].set_ylabel(r'$\frac{\text{Model}}{\text{GEANT}}$')
-            ax[even_pair].set_ylabel('a.u.')
-            ax[odd_pair].set_yticks((0.7, 1.3))
-
-        if odd_pair[0]==7:
-            ax[odd_pair].set_xlabel(f'$E_{{\\text{{tot}}}} / E_{{\\text{{inc}}}}$')
-            
-        if i in [0, 1, 2]:
-            energy_label = '$E_\\text{{inc}}$={:.0f} MeV'.format(energy)
-        elif i in np.arange(3, 12):
-            energy_label = '$E_\\text{{inc}}$={:.1f} GeV'.format(energy/1e3)
-        else:
-            energy_label = '$E_\\text{{inc}}$={:.1f} TeV'.format(energy/1e6)
-
-        ax[even_pair].text(0.03, 0.9, energy_label, fontsize=16, transform=ax[even_pair].transAxes)
-
-    fig.subplots_adjust(hspace=0.0, wspace=0.0)
-
-    fig.tight_layout(pad=0.0, h_pad=0.0, w_pad=0.0, rect=(0.01, 0.01, 0.955, 0.955))
-
-    lines = []
-    for n in range(len(hlfs)):
-        line, = ax[0,0].plot(0,0, c=colors[n], label='solid')
-        lines.append(line)
-
-    line_ref, = ax[0,0].plot(0,0, c='k', ls='solid')
-    fig.legend(handles=lines+[line_ref,], labels=labels[:len(lines)]+['GEANT',], ncol=len(hlfs)+1, frameon=False, loc='upper center')
+    odd_pairs = list(product((1,4,7), (0,1,2,3,4)))
+    fake_pairs = list(product((2,5), (0,1,2,3,4)))
 
     filename = os.path.join(arg.output_dir, 'Etot_Einc_dataset_{}_E_i.pdf'.format(arg.dataset))
-    fig.savefig(filename, dpi=300)
-    plt.close()
+    with PdfPages(filename) as pdf:
+        for page_start in range(0, n_targets, page_capacity):
+            page_end = min(page_start + page_capacity, n_targets)
+            page_count = page_end - page_start
+
+            fig, ax = plt.subplots(
+                8,
+                5,
+                figsize=(15, 13.5),
+                gridspec_kw={'height_ratios': [6, 2, 1, 6, 2, 1, 6, 2], 'wspace': 0, 'hspace': 0.0},
+            )
+
+            for pair in fake_pairs:
+                ax[pair].remove()
+
+            for local_i in range(page_count):
+                global_i = page_start + local_i
+
+                bins = bins_list[global_i]
+                energy = target_energies[global_i]
+                even_pair = even_pairs[local_i]
+                odd_pair = odd_pairs[local_i]
+
+                which_showers_ref = np.abs(reference_class.Einc.squeeze() - energy) < tolerance
+                if not np.any(which_showers_ref):
+                    continue
+
+                energy_ref = reference_class.GetEtot()[which_showers_ref] / reference_class.Einc.squeeze()[which_showers_ref]
+                counts_ref, bins = np.histogram(energy_ref, bins=bins, density=False)
+                total_ref = counts_ref.sum()
+                if total_ref == 0:
+                    continue
+                counts_ref_norm = counts_ref / total_ref
+                ref_error = counts_ref_norm / np.sqrt(np.maximum(counts_ref, 1.0))
+
+                ax[even_pair].step(bins, dup(counts_ref_norm), color='k', alpha=0.8, linewidth=1.0, linestyle='-', where='post')
+                ax[even_pair].fill_between(
+                    bins,
+                    dup(counts_ref_norm + ref_error),
+                    dup(np.maximum(counts_ref_norm - ref_error, 0.0)),
+                    step='post',
+                    color='k',
+                    alpha=0.2,
+                )
+
+                ref_denom = np.where(counts_ref_norm > 0, counts_ref_norm, np.nan)
+                for n, hlf in enumerate(hlfs):
+                    which_showers = np.abs(hlf.Einc.squeeze() - energy) < tolerance
+                    if not np.any(which_showers):
+                        continue
+
+                    energy_n = hlf.GetEtot()[which_showers] / hlf.Einc.squeeze()[which_showers]
+                    counts_n, bins = np.histogram(energy_n, bins=bins, density=False)
+                    total_n = counts_n.sum()
+                    if total_n == 0:
+                        continue
+
+                    counts_n_norm = counts_n / total_n
+                    error_n = counts_n_norm / np.sqrt(np.maximum(counts_n, 1.0))
+
+                    ax[even_pair].step(
+                        bins,
+                        dup(counts_n_norm),
+                        color=colors[n],
+                        alpha=0.8,
+                        linewidth=1.0,
+                        linestyle='-',
+                        where='post',
+                    )
+                    ax[even_pair].fill_between(
+                        bins,
+                        dup(counts_n_norm + error_n),
+                        dup(np.maximum(counts_n_norm - error_n, 0.0)),
+                        step='post',
+                        color=colors[n],
+                        alpha=0.2,
+                    )
+
+                    ratio_data = np.divide(counts_n_norm, ref_denom, out=np.full_like(counts_n_norm, np.nan), where=~np.isnan(ref_denom))
+                    ratio_err = np.divide(error_n, ref_denom, out=np.full_like(error_n, np.nan), where=~np.isnan(ref_denom))
+                    ax[odd_pair].step(bins, dup(ratio_data), linewidth=1.0, alpha=1.0, color=colors[n], where='post')
+                    ax[odd_pair].fill_between(
+                        bins,
+                        dup(ratio_data - ratio_err),
+                        dup(ratio_data + ratio_err),
+                        step='post',
+                        color=colors[n],
+                        alpha=0.2,
+                    )
+
+                ax[odd_pair].hlines(1.0, bins[0], bins[-1], linewidth=1.0, alpha=0.8, linestyle='-', color='k')
+                ax[odd_pair].axhline(0.7, c='k', ls='--', lw=0.5)
+                ax[odd_pair].axhline(1.3, c='k', ls='--', lw=0.5)
+
+                ref_ratio_err = np.divide(ref_error, ref_denom, out=np.full_like(ref_error, np.nan), where=~np.isnan(ref_denom))
+                ax[odd_pair].fill_between(
+                    bins,
+                    dup(1 - ref_ratio_err),
+                    dup(1 + ref_ratio_err),
+                    step='post',
+                    color='k',
+                    alpha=0.2,
+                )
+
+                ax[even_pair].set_xlim(bins[0], bins[-1])
+                ax[odd_pair].set_xlim(bins[0], bins[-1])
+                ax[odd_pair].set_ylim(0.5, 1.5)
+                ax[odd_pair].set_yticks((0.7, 1.3))
+
+                ax[even_pair].set_yticks([])
+                ax[even_pair].set_xticks([])
+                ax[odd_pair].set_yticks([])
+
+                if odd_pair[1] == 0:
+                    ax[odd_pair].set_ylabel(r'$\frac{\text{Model}}{\text{GEANT}}$')
+                    ax[even_pair].set_ylabel('a.u.')
+                    ax[odd_pair].set_yticks((0.7, 1.3))
+
+                if odd_pair[0] == 7:
+                    ax[odd_pair].set_xlabel(f'$E_{{\\text{{tot}}}} / E_{{\\text{{inc}}}}$')
+
+                energy_for_label = energy 
+                if energy_for_label < 1.e3:
+                    energy_label = '$E_\\text{{inc}}$={:.0f} MeV'.format(energy_for_label)
+                elif energy_for_label < 1.e6:
+                    energy_label = '$E_\\text{{inc}}$={:.1f} GeV'.format(energy_for_label/1e3)
+                else:
+                    energy_label = '$E_\\text{{inc}}$={:.1f} TeV'.format(energy_for_label/1e6)
+
+                ax[even_pair].text(0.03, 0.9, energy_label, fontsize=16, transform=ax[even_pair].transAxes)
+
+            for local_i in range(page_count, page_capacity):
+                ax[even_pairs[local_i]].remove()
+                ax[odd_pairs[local_i]].remove()
+
+            fig.subplots_adjust(hspace=0.0, wspace=0.0)
+            fig.tight_layout(pad=0.0, h_pad=0.0, w_pad=0.0, rect=(0.01, 0.01, 0.955, 0.955))
+
+            lines = []
+            for n in range(len(hlfs)):
+                line, = ax[0, 0].plot(0, 0, c=colors[n], label='solid')
+                lines.append(line)
+
+            line_ref, = ax[0, 0].plot(0, 0, c='k', ls='solid')
+            fig.legend(
+                handles=lines + [line_ref],
+                labels=get_model_labels(len(lines)) + ['GEANT'],
+                ncol=len(hlfs) + 1,
+                frameon=False,
+                loc='upper center',
+            )
+
+            pdf.savefig(fig, dpi=300)
+            plt.close(fig)
     
 def _separation_power(hist1, hist2, bins):
     """ computes the separation power aka triangular discrimination (cf eq. 15 of 2009.03796)

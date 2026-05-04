@@ -143,3 +143,12 @@ params/*
 Datasets
 queuing_system
 notebooks
+
+# pdf files
+*.pdf
+
+# text files
+*.txt
+
+# torch files
+*.pt
