@@ -6,7 +6,20 @@ Ernst F., Favaro L., Krause C., Plehn T., and Shih D.
 
 The samples used in the paper are publicly available on Zenodo. [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.14178546.svg)](https://doi.org/10.5281/zenodo.14178546)
 
-Fast calorimeter generation for CaloGAN dataset and Fast Calorimeter Challenge.
+## Description
+
+CaloINN is a fast calorimeter shower simulation framework based on **Invertible Neural Networks (INNs)** — a class of generative models known as normalizing flows. It is designed to replace computationally expensive Monte Carlo simulations of particle detectors in high-energy physics experiments.
+
+Given an incident particle energy as a condition, the model learns to generate realistic calorimeter shower deposits that match the statistical properties of full simulations. CaloINN operates directly in the full voxel space of the calorimeter ("full-space" approach), enabling high-fidelity generation without dimensionality reduction.
+
+### Key features
+
+- **Normalizing flow architecture** built on coupling blocks (affine, cubic spline, rational-quadratic spline, and MADE variants) via the [FrEIA](https://github.com/vislearn/FrEIA) framework.
+- **Bayesian training** support with variational Bayes linear layers, enabling uncertainty estimation for generated showers.
+- **Flexible preprocessing** including energy normalization, log-transform, and learnable ActNorm layers.
+- **CaloChallenge benchmark support** for datasets 1 (photons and pions), 2, and 3, with built-in evaluation and plotting via the CaloChallenge pipeline.
+- **CaloGAN dataset support** available on the `calogan_data` branch.
+- A companion **latent model** (VAE + INN) is available on the `VAE+INN` branch.
 
 This is the main repository for the full-space CaloINN network. For the CaloGAN data results check the branch "calogan_data",
 while for our latent model see "VAE+INN".
