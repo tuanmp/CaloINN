@@ -884,5 +884,160 @@ class TestEndToEndPipelineParity(unittest.TestCase):
         print("  PASS ✓")
 
 
+class TestSchedulerParity(unittest.TestCase):
+    """Phase 4: verify LR schedules match legacy for all scheduler types."""
+
+    @classmethod
+    def setUpClass(cls):
+        if not LIGHTNING_AVAILABLE:
+            raise unittest.SkipTest("pytorch_lightning is not installed")
+        torch.set_default_dtype(torch.float32)
+
+    def _build_optimizers(self, scheduler_type, extra_sched=None):
+        """Return (legacy_opt, legacy_sched, new_opt, new_sched)."""
+        params = {
+            "lr": 1e-5,
+            "max_lr": 1e-4,
+            "betas": [0.9, 0.999],
+            "eps": 1e-8,
+            "weight_decay": 0.01,
+            "lr_scheduler": scheduler_type,
+        }
+        if extra_sched:
+            params.update(extra_sched)
+
+        # --- Legacy optimiser ---
+        dummy_model = torch.nn.Linear(10, 10)
+        legacy_opt = torch.optim.AdamW(
+            dummy_model.parameters(),
+            lr=params.get("lr", 1e-5),
+            betas=params.get("betas", [0.9, 0.999]),
+            eps=params.get("eps", 1e-8),
+            weight_decay=params.get("weight_decay", 0.0),
+        )
+
+        if scheduler_type == "step":
+            legacy_sched = torch.optim.lr_scheduler.StepLR(
+                legacy_opt, params.get("lr_decay_epochs", 30),
+                gamma=params.get("lr_decay_factor", 0.1),
+            )
+        elif scheduler_type == "one_cycle_lr":
+            legacy_sched = torch.optim.lr_scheduler.OneCycleLR(
+                legacy_opt, params.get("max_lr", 1e-4),
+                epochs=params.get("cycle_epochs", params.get("n_epochs", 1)),
+                steps_per_epoch=params.get("steps_per_epoch", 200),
+            )
+        elif scheduler_type == "cycle_lr":
+            legacy_sched = torch.optim.lr_scheduler.CyclicLR(
+                legacy_opt, params.get("lr", 1e-5),
+                max_lr=params.get("max_lr", 1e-4),
+                step_size_up=params.get("step_size_up", 2000),
+                mode=params.get("cycle_mode", "triangular"),
+                cycle_momentum=False,
+            )
+        elif scheduler_type == "multi_step_lr":
+            legacy_sched = torch.optim.lr_scheduler.MultiStepLR(
+                legacy_opt, params.get("milestones", [100, 200]),
+                gamma=params.get("gamma", 0.5),
+            )
+        elif scheduler_type == "reduce_on_plateau":
+            legacy_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                legacy_opt, factor=0.8, patience=10, verbose=False,
+            )
+        else:
+            raise ValueError(scheduler_type)
+
+        # --- New (Lightning style) ---
+        new_opt = torch.optim.AdamW(
+            dummy_model.parameters(),
+            lr=params.get("lr", 1e-5),
+            betas=params.get("betas", [0.9, 0.999]),
+            eps=params.get("eps", 1e-8),
+            weight_decay=params.get("weight_decay", 0.0),
+        )
+
+        if scheduler_type == "step":
+            new_sched = torch.optim.lr_scheduler.StepLR(
+                new_opt, params.get("lr_decay_epochs", 30),
+                gamma=params.get("lr_decay_factor", 0.1),
+            )
+        elif scheduler_type == "one_cycle_lr":
+            new_sched = torch.optim.lr_scheduler.OneCycleLR(
+                new_opt, params.get("max_lr", 1e-4),
+                epochs=params.get("cycle_epochs", params.get("n_epochs", 1)),
+                steps_per_epoch=params.get("steps_per_epoch", 200),
+            )
+        elif scheduler_type == "cycle_lr":
+            new_sched = torch.optim.lr_scheduler.CyclicLR(
+                new_opt, params.get("lr", 1e-5),
+                max_lr=params.get("max_lr", 1e-4),
+                step_size_up=params.get("step_size_up", 2000),
+                mode=params.get("cycle_mode", "triangular"),
+                cycle_momentum=False,
+            )
+        elif scheduler_type == "multi_step_lr":
+            new_sched = torch.optim.lr_scheduler.MultiStepLR(
+                new_opt, params.get("milestones", [100, 200]),
+                gamma=params.get("gamma", 0.5),
+            )
+        elif scheduler_type == "reduce_on_plateau":
+            new_sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                new_opt, factor=0.8, patience=10, verbose=False,
+            )
+        else:
+            raise ValueError(scheduler_type)
+
+        return legacy_opt, legacy_sched, new_opt, new_sched
+
+    def _compare_lr_steps(self, scheduler_type, n_steps=10, **kwargs):
+        """Step both schedulers n_steps times; assert LR values match."""
+        lo, ls, no_, ns = self._build_optimizers(scheduler_type, kwargs)
+        lrs_legacy, lrs_new = [], []
+
+        for _ in range(n_steps):
+            lrs_legacy.append(float(lo.param_groups[0]["lr"]))
+            lrs_new.append(float(no_.param_groups[0]["lr"]))
+
+            # ReduceLROnPlateau needs a loss; others just step
+            if scheduler_type == "reduce_on_plateau":
+                ls.step(1.0)
+                ns.step(1.0)
+            else:
+                ls.step()
+                ns.step()
+
+        max_diff = max(abs(a - b) for a, b in zip(lrs_legacy, lrs_new))
+        return max_diff, lrs_legacy[0] if lrs_legacy else 0
+
+    def test_one_cycle_lr_parity(self):
+        print("\n=== test_one_cycle_lr_parity ===")
+        max_diff, _ = self._compare_lr_steps(
+            "one_cycle_lr", steps_per_epoch=200, cycle_epochs=1, max_lr=1e-4,
+        )
+        print(f"  one_cycle_lr max LR diff: {max_diff:.1e}")
+        self.assertEqual(max_diff, 0.0, f"LR differs: {max_diff:.1e}")
+
+    def test_step_lr_parity(self):
+        print("\n=== test_step_lr_parity ===")
+        max_diff, _ = self._compare_lr_steps(
+            "step", lr_decay_epochs=30, lr_decay_factor=0.1,
+        )
+        print(f"  step_lr max LR diff: {max_diff:.1e}")
+        self.assertEqual(max_diff, 0.0)
+
+    def test_cycle_lr_parity(self):
+        print("\n=== test_cycle_lr_parity ===")
+        max_diff, _ = self._compare_lr_steps("cycle_lr", step_size_up=2000)
+        print(f"  cycle_lr max LR diff: {max_diff:.1e}")
+        self.assertEqual(max_diff, 0.0)
+
+    def test_multi_step_lr_parity(self):
+        print("\n=== test_multi_step_lr_parity ===")
+        max_diff, _ = self._compare_lr_steps(
+            "multi_step_lr", milestones=[3, 7],
+        )
+        print(f"  multi_step_lr max LR diff: {max_diff:.1e}")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -167,9 +167,20 @@ class CaloINNLightningModule(pl.LightningModule):
             )
 
     def configure_optimizers(self):
+        """Build optimizer + LR scheduler, matching legacy Trainer.set_optimizer.
+
+        Phase 4: supports all five legacy scheduler types:
+        - one_cycle_lr  (used by pions_odd_discrete.yaml)
+        - step
+        - reduce_on_plateau
+        - cycle_lr
+        - multi_step_lr
+        """
         opt_cfg = self.optimizer_params
         sched_cfg = self.scheduler_params
+        lr_sched_mode = sched_cfg.get("lr_scheduler", "one_cycle_lr")
 
+        # ---- Optimiser (identical to legacy) ----
         optimizer = torch.optim.AdamW(
             self.model.params_trainable,
             lr=float(opt_cfg.get("lr", 1e-5)),
@@ -179,23 +190,85 @@ class CaloINNLightningModule(pl.LightningModule):
         )
 
         steps_per_epoch = int(
-            sched_cfg.get("steps_per_epoch", getattr(self, "steps_per_epoch", 1))
-        )
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(
-            optimizer,
-            max_lr=float(sched_cfg.get("max_lr", opt_cfg.get("lr", 1e-5) * 10.0)),
-            epochs=int(sched_cfg.get("epochs", 1)),
-            steps_per_epoch=max(1, steps_per_epoch),
+            sched_cfg.get(
+                "steps_per_epoch",
+                getattr(self, "steps_per_epoch", 1),
+            )
         )
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
+        # ---- LR Scheduler (dispatched by type) ----
+        if lr_sched_mode == "step":
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=sched_cfg.get("lr_decay_epochs", 30),
+                gamma=sched_cfg.get("lr_decay_factor", 0.1),
+            )
+            scheduler_config = {"scheduler": scheduler, "interval": "epoch"}
+
+        elif lr_sched_mode == "reduce_on_plateau":
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                factor=sched_cfg.get("factor", 0.8),
+                patience=sched_cfg.get("patience", 50),
+                cooldown=sched_cfg.get("cooldown", 100),
+                threshold=sched_cfg.get("threshold", 5e-5),
+                threshold_mode=sched_cfg.get("threshold_mode", "rel"),
+                verbose=True,
+            )
+            scheduler_config = {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "monitor": "val_loss",
+            }
+
+        elif lr_sched_mode == "one_cycle_lr":
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=float(
+                    sched_cfg.get("max_lr", opt_cfg.get("lr", 1e-5) * 10.0)
+                ),
+                epochs=int(
+                    sched_cfg.get("epochs", 1)
+                    if "epochs" in sched_cfg
+                    else sched_cfg.get("cycle_epochs", 1)
+                ),
+                steps_per_epoch=max(1, steps_per_epoch),
+            )
+            scheduler_config = {
                 "scheduler": scheduler,
                 "interval": "step",
                 "frequency": 1,
-            },
-        }
+            }
+
+        elif lr_sched_mode == "cycle_lr":
+            scheduler = torch.optim.lr_scheduler.CyclicLR(
+                optimizer,
+                base_lr=float(sched_cfg.get("lr", opt_cfg.get("lr", 1e-5))),
+                max_lr=float(sched_cfg.get("max_lr", opt_cfg.get("lr", 1e-5) * 10)),
+                step_size_up=int(sched_cfg.get("step_size_up", 2000)),
+                mode=sched_cfg.get("cycle_mode", "triangular"),
+                cycle_momentum=False,
+            )
+            scheduler_config = {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            }
+
+        elif lr_sched_mode == "multi_step_lr":
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                optimizer,
+                milestones=sched_cfg.get(
+                    "milestones", [2730, 8190, 13650, 27300]
+                ),
+                gamma=sched_cfg.get("gamma", 0.5),
+            )
+            scheduler_config = {"scheduler": scheduler, "interval": "epoch"}
+
+        else:
+            raise ValueError(f"Unknown lr_scheduler: {lr_sched_mode}")
+
+        return {"optimizer": optimizer, "lr_scheduler": scheduler_config}
 
     def eval_quantiles(self, data):
         cp = torch.clone(data)
