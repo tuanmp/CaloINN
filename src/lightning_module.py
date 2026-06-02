@@ -49,6 +49,8 @@ class CaloINNLightningModule(pl.LightningModule):
         init_data_c=None,
         init_layer_boundaries=None,
         init_num_train_samples=None,
+        # max_samples: randomly subsample init data (matches legacy behavior)
+        max_samples=None,
     ):
         super().__init__()
 
@@ -81,6 +83,17 @@ class CaloINNLightningModule(pl.LightningModule):
 
         self.num_dim = int(sample_x.shape[1])
 
+        # Phase 2b: max_samples — randomly subsample init data to match
+        # legacy behavior where only max_samples are used for CINN
+        # initialization (trainer.py lines 62-64).  The full dataset
+        # count is preserved in num_train_samples for KL scaling.
+        n_full_init = int(sample_x.shape[0])
+        if max_samples is not None and max_samples > 0 and max_samples < n_full_init:
+            torch.manual_seed(42)  # deterministic subsample (legacy uses randperm)
+            rand_idx = torch.randperm(n_full_init)[: int(max_samples)]
+            sample_x = sample_x[rand_idx]
+            sample_c = sample_c[rand_idx]
+
         n_calib = min(int(actnorm_calibration_samples), int(sample_x.shape[0]))
         self._actnorm_calib_x = sample_x[:n_calib].detach().clone()
         self._actnorm_calib_c = sample_c[:n_calib].detach().clone()
@@ -91,7 +104,10 @@ class CaloINNLightningModule(pl.LightningModule):
         if init_num_train_samples is not None:
             self.num_train_samples = int(init_num_train_samples)
         else:
-            self.num_train_samples = max(1, int(sample_x.shape[0]))
+            # Use full dataset size for KL scaling (n_full_init preserved
+            # before max_samples subsampling, matching legacy behavior where
+            # N = len(train_loader.data) is the full count).
+            self.num_train_samples = max(1, n_full_init)
 
         if self.hparams["custom_noise"]:
             q = self.eval_quantiles(torch.clone(sample_x))
