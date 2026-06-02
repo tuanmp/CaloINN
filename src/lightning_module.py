@@ -28,7 +28,7 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def __init__(
         self,
-        setup_data_sample_path,
+        setup_data_sample_path=None,
         enable_diagnostics=False,
         actnorm_calibration_samples=1024,
         xml_path="./binning_dataset_1_pions.xml",
@@ -44,6 +44,11 @@ class CaloINNLightningModule(pl.LightningModule):
         init_from_legacy_train_split=True,
         optimizer_params=None,
         scheduler_params=None,
+        # Phase 2: accept preprocessed data arrays directly, bypassing file read
+        init_data_x=None,
+        init_data_c=None,
+        init_layer_boundaries=None,
+        init_num_train_samples=None,
     ):
         super().__init__()
 
@@ -58,17 +63,35 @@ class CaloINNLightningModule(pl.LightningModule):
 
         self.save_hyperparameters()
 
-        assert setup_data_sample_path is not None, "Must provide setup_data_sample_path to initialize model parameters"
-        assert setup_data_sample_path.endswith(".hdf5"), "setup_data_sample_path must be an .hdf5 file path"
+        # Phase 2: Support direct data arrays from DataModule, bypassing
+        # redundant HDF5 file reads. Legacy path (via setup_data_sample_path)
+        # is kept for backwards compatibility.
+        if init_data_x is not None and init_data_c is not None:
+            sample_x = init_data_x
+            sample_c = init_data_c
+            self.layer_boundaries = init_layer_boundaries
+        else:
+            assert setup_data_sample_path is not None, (
+                "Must provide either setup_data_sample_path or init_data_x/init_data_c"
+            )
+            assert setup_data_sample_path.endswith(".hdf5"), (
+                "setup_data_sample_path must be an .hdf5 file path"
+            )
+            sample_x, sample_c, self.layer_boundaries = self.load_init_tensors()
 
-        sample_x, sample_c, self.layer_boundaries = self.load_init_tensors()
         self.num_dim = int(sample_x.shape[1])
 
         n_calib = min(int(actnorm_calibration_samples), int(sample_x.shape[0]))
         self._actnorm_calib_x = sample_x[:n_calib].detach().clone()
         self._actnorm_calib_c = sample_c[:n_calib].detach().clone()
 
-        self.num_train_samples = 1
+        # Phase 2: num_train_samples is now set from actual data or override.
+        # It will be updated by setup() when the datamodule is attached.
+        # For bayesian models, the correct value is critical (KL scaling).
+        if init_num_train_samples is not None:
+            self.num_train_samples = int(init_num_train_samples)
+        else:
+            self.num_train_samples = max(1, int(sample_x.shape[0]))
 
         if self.hparams["custom_noise"]:
             q = self.eval_quantiles(torch.clone(sample_x))
@@ -121,14 +144,27 @@ class CaloINNLightningModule(pl.LightningModule):
         dtype = torch.get_default_dtype()
         x = torch.tensor(x, dtype=dtype)
         c = torch.tensor(c, dtype=dtype)
+        
         return x, c, layer_boundaries
 
     def setup(self, stage: str):
-
+        # Phase 2: num_train_samples is set during __init__ from data size.
+        # If a Lightning datamodule is attached, prefer its count (may differ
+        # if DataModule uses different preprocessing filters).
         if stage == "fit":
-            self.num_train_samples = self.trainer.datamodule.num_train_samples
-            self.steps_per_epoch = len(self.trainer.datamodule.train_dataloader())
-            rank_zero_info(f"Number of training samples: {self.num_train_samples}")
+            if (
+                hasattr(self.trainer, "datamodule")
+                and self.trainer.datamodule is not None
+                and hasattr(self.trainer.datamodule, "num_train_samples")
+            ):
+                self.num_train_samples = self.trainer.datamodule.num_train_samples
+                self.steps_per_epoch = len(self.trainer.datamodule.train_dataloader())
+            else:
+                # Fallback: keep __init__ value; steps_per_epoch computed elsewhere
+                self.steps_per_epoch = max(1, self.num_train_samples // 512)
+            rank_zero_info(
+                f"Number of training samples: {self.num_train_samples}"
+            )
 
     def configure_optimizers(self):
         opt_cfg = self.optimizer_params
@@ -192,6 +228,16 @@ class CaloINNLightningModule(pl.LightningModule):
         return loss, inn_loss, kl_loss
 
     def _apply_input_noise(self, x: torch.Tensor) -> torch.Tensor:
+        """Add uniform noise [0, width_noise) to input tensor.
+
+        NOTE (Phase 3): Legacy MyDataLoader already adds noise per-batch in
+        __next__, so the streaming dataset (PreprocessedStreamingDataset)
+        does the same in __iter__.  The training step therefore does NOT call
+        this method — adding noise here would apply it *twice*.
+
+        This method is kept for backwards-compatibility with dataloaders
+        that do not add noise (e.g., a vanilla TensorDataset).
+        """
         if self.width_noise <= 0:
             return x
         return x + torch.rand_like(x) * self.width_noise
@@ -216,7 +262,9 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, c = batch
-        x = self._apply_input_noise(x)
+        # Phase 3: Noise is applied by the dataloader (matching legacy MyDataLoader).
+        # _apply_input_noise is NOT called here to avoid double-noise.
+        # See _apply_input_noise docstring for details.
         self.batch_number += 1
         self._run_batch_diagnostics = self.diagnostics.should_run_batch(self.current_epoch, batch_idx)
         self._diag_batch_idx = int(batch_idx)
@@ -234,13 +282,16 @@ class CaloINNLightningModule(pl.LightningModule):
 
         self.log("train_loss", loss.detach(), on_step=True, on_epoch=True, prog_bar=True, batch_size=x.shape[0])
         self.log("train_inn_loss", inn_loss.detach(), on_step=True, on_epoch=True, batch_size=x.shape[0])
+
+        self.log("train_loss_per_dim", loss.detach() / x.shape[1], on_step=True, on_epoch=True, prog_bar=True, batch_size=x.shape[0])
+        self.log("train_inn_loss_per_dim", inn_loss.detach() / x.shape[1], on_step=True, on_epoch=True, batch_size=x.shape[0])
         if kl_loss is not None:
             self.log("train_kl_loss", kl_loss.detach(), on_step=True, on_epoch=True, batch_size=x.shape[0])
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, c = batch
-        x = self._apply_input_noise(x)
+        # Phase 3: noise is in dataloader, not here
         loss, inn_loss, kl_loss = self._compute_losses(x, c, run_diagnostics=False)
 
         if not torch.isfinite(loss):
@@ -253,12 +304,14 @@ class CaloINNLightningModule(pl.LightningModule):
 
         self.log("val_loss", loss.detach(), on_step=False, on_epoch=True, prog_bar=True, batch_size=x.shape[0])
         self.log("val_inn_loss", inn_loss.detach(), on_step=False, on_epoch=True, batch_size=x.shape[0])
+        self.log("val_loss_per_dim", loss.detach() / x.shape[1], on_step=False, on_epoch=True, prog_bar=True, batch_size=x.shape[0])
+        self.log("val_inn_loss_per_dim", inn_loss.detach() / x.shape[1], on_step=False, on_epoch=True, batch_size=x.shape[0])
         if kl_loss is not None:
             self.log("val_kl_loss", kl_loss.detach(), on_step=False, on_epoch=True, batch_size=x.shape[0])
 
     def test_step(self, batch, batch_idx):
         x, c = batch
-        x = self._apply_input_noise(x)
+        # Phase 3: noise is in dataloader, not here
         loss, inn_loss, kl_loss = self._compute_losses(x, c, run_diagnostics=False)
 
         self.log("test_loss", loss, on_step=False, on_epoch=True, batch_size=x.shape[0])
@@ -271,12 +324,13 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # Generate once per predict run; Lightning still requires a predict dataloader.
-        x, c = batch 
+        x, c = batch
 
         samples, t = self.conditional_generate(c, measure_gen_time=True)
-        self.log("predict_gen_time", t / c.shape[0], on_step=False, on_epoch=True, prog_bar=True, batch_size=c.shape[0])
+        # self.log("predict_gen_time", t / c.shape[0], on_step=False, on_epoch=True, prog_bar=True, batch_size=c.shape[0])
         samples -= self.width_noise
-        shower = data_util.postprocess(
+        samples = samples[:, 0, ...]
+        data = data_util.postprocess(
             samples.cpu().numpy(),
             c.cpu().numpy(),
             layer_boundaries=self.layer_boundaries,
@@ -284,7 +338,13 @@ class CaloINNLightningModule(pl.LightningModule):
             quantiles=self.q.detach().cpu().numpy(),
         )
 
-        return shower
+        incident_energies, layers = data_util.get_energy_and_sorted_layers(data)
+        assert torch.allclose(torch.tensor(incident_energies), c.cpu(), rtol=0, atol=1e-3), "Mismatch between input energies and postprocessed energies"
+        incident_energies *= 1.e3
+
+        shower = np.concatenate(layers, axis=1) * 1.e3
+
+        return incident_energies, shower, t / c.shape[0]
 
 
     @torch.inference_mode()
