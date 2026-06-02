@@ -23,6 +23,41 @@ class LogUniform(dist.TransformedDistribution):
         )
 
 
+class _SkipLastTwoScheduler:
+    """Wrapper that skips the last 2 scheduler.step() calls, matching legacy.
+
+    Trainer.py lines 150-153:
+        if i < self.scheduler.total_steps-2:
+            self.scheduler.step()
+        else:
+            pass
+
+    This prevents OneCycleLR from reaching its terminal annealing, freezing
+    the LR at the penultimate value for the final 2 optimizer updates.
+    """
+    def __init__(self, scheduler):
+        self._scheduler = scheduler
+        self._total = getattr(scheduler, "total_steps", 0)
+        self._step_count = 0
+
+    def step(self):
+        if self._step_count < self._total - 2:
+            self._scheduler.step()
+        self._step_count += 1
+
+    def state_dict(self):
+        return self._scheduler.state_dict()
+
+    def load_state_dict(self, sd):
+        self._scheduler.load_state_dict(sd)
+
+    def get_last_lr(self):
+        return self._scheduler.get_last_lr()
+
+    def __getattr__(self, name):
+        return getattr(self._scheduler, name)
+
+
 class CaloINNLightningModule(pl.LightningModule):
     """Lightning module that preserves the CINN training logic."""
 
@@ -199,9 +234,9 @@ class CaloINNLightningModule(pl.LightningModule):
         # ---- Optimiser (identical to legacy) ----
         optimizer = torch.optim.AdamW(
             self.model.params_trainable,
-            lr=float(opt_cfg.get("lr", 1e-5)),
+            lr=float(opt_cfg.get("lr", 0.0002)),   # legacy default: 0.0002
             betas=tuple(opt_cfg.get("betas", [0.9, 0.999])),
-            eps=float(opt_cfg.get("eps", 1e-10)),
+            eps=float(opt_cfg.get("eps", 1e-6)),    # legacy default: 1e-6
             weight_decay=float(opt_cfg.get("weight_decay", 0.0)),
         )
 
@@ -219,7 +254,7 @@ class CaloINNLightningModule(pl.LightningModule):
                 step_size=sched_cfg.get("lr_decay_epochs", 30),
                 gamma=sched_cfg.get("lr_decay_factor", 0.1),
             )
-            scheduler_config = {"scheduler": scheduler, "interval": "epoch"}
+            scheduler_config = {"scheduler": scheduler, "interval": "step"}
 
         elif lr_sched_mode == "reduce_on_plateau":
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -279,11 +314,13 @@ class CaloINNLightningModule(pl.LightningModule):
                 ),
                 gamma=sched_cfg.get("gamma", 0.5),
             )
-            scheduler_config = {"scheduler": scheduler, "interval": "epoch"}
+            scheduler_config = {"scheduler": scheduler, "interval": "step"}
 
         else:
             raise ValueError(f"Unknown lr_scheduler: {lr_sched_mode}")
 
+        # Phase 3c: wrap scheduler to skip last 2 steps (matching legacy trainer.py:150-153)
+        scheduler_config["scheduler"] = _SkipLastTwoScheduler(scheduler_config["scheduler"])
         return {"optimizer": optimizer, "lr_scheduler": scheduler_config}
 
     def eval_quantiles(self, data):

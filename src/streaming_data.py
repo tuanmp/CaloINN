@@ -225,6 +225,10 @@ class PreprocessedStreamingDataset(IterableDataset):
         # Compute valid indices if not provided
         if precomputed_valid_indices is None:
             self.valid_indices, self.num_original = self._compute_filter_indices(data_path)
+            # One-time shuffle before split (matching legacy get_loaders:444-454)
+            if self.shuffle:
+                rng = np.random.RandomState(42)
+                self.valid_indices = self.valid_indices[rng.permutation(len(self.valid_indices))]
         else:
             self.valid_indices = precomputed_valid_indices
             self.num_original = len(precomputed_valid_indices)  # Approximation
@@ -250,17 +254,7 @@ class PreprocessedStreamingDataset(IterableDataset):
             torch.tensor(0.0),
             torch.tensor(1.0)
         )
-        self.fixed_noise_tensor = None
-        if self.fixed_noise and self.width_noise > 0:
-            # Generate fixed noise once per sample (will be reused)
-            self.fixed_noise_tensor = self._generate_fixed_noise()
-
         self.num_preprocessed_features = None  # Set after first batch
-
-    def _generate_fixed_noise(self) -> torch.Tensor:
-        """Generate fixed noise for all samples (matches old MyDataLoader.fix_noise())."""
-        # We'll generate noise per-batch when needed, but store the width
-        return None  # Will generate lazily
 
     def _compute_filter_indices(self, data_path: str) -> Tuple[np.ndarray, int]:
         """First pass: compute which samples pass the filter.
@@ -325,12 +319,16 @@ class PreprocessedStreamingDataset(IterableDataset):
 
         Creates layer_N keys like load_data does, for preprocessing compatibility.
 
-        IMPORTANT: Use np.float32(1e3) to avoid dtype promotion.
-        Python float (1.e3) promotes float32 → float64 in numpy division.
+        IMPORTANT: uses Python float 1.e3 (float64) to match legacy dtype
+        promotion.  The legacy load_data divides by 1.e3 which promotes
+        HDF5 float32 → numpy float64 through the entire preprocessing
+        pipeline.  We intentionally replicate this for bit-reproducibility.
+        Final casting to float32 happens in the tensor conversion step,
+        exactly matching `torch.tensor(x, dtype=torch.get_default_dtype())`.
         """
-        E_SCALE = np.float32(1e3)
+        E_SCALE = 1.e3  # Python float → float64, matches legacy behavior
         data = {}
-        data["energy"] = (energies.reshape(-1, 1) / E_SCALE).astype(np.float32)
+        data["energy"] = energies.reshape(-1, 1) / E_SCALE
 
         # Split showers into layers using layer_boundaries
         for layer_index, (layer_start, layer_end) in enumerate(
@@ -338,7 +336,7 @@ class PreprocessedStreamingDataset(IterableDataset):
         ):
             data[f"layer_{layer_index}"] = (
                 showers[..., layer_start:layer_end] / E_SCALE
-            ).astype(np.float32)
+            )
 
         return data
 
@@ -380,12 +378,14 @@ class PreprocessedStreamingDataset(IterableDataset):
                 last = min(first + self.batch_size, len(self.indices))
                 idx = index[first:last].numpy()
 
-                # Get actual HDF5 indices (sorted for HDF5 requirement)
-                hdf5_idx = np.sort(self.indices[idx])
+                # Get HDF5 indices in shuffled order (matching legacy MyDataLoader)
+                hdf5_unsorted = self.indices[idx]            # shuffled HDF5 rows
+                sort_order = np.argsort(hdf5_unsorted)       # permutation that sorts
+                hdf5_sorted = hdf5_unsorted[sort_order]      # sorted for efficient HDF5 read
 
                 # Read raw data from HDF5 (sequential read for HDF5 compliance)
-                raw_x = showers_dataset[hdf5_idx]  # (batch, n_features)
-                raw_c = energies_dataset[hdf5_idx]  # (batch, 1)
+                raw_x = showers_dataset[hdf5_sorted]         # (batch, n_features)
+                raw_c = energies_dataset[hdf5_sorted]        # (batch, 1)
 
                 # Build data dict for preprocessing
                 data = self._build_data_dict(raw_x, raw_c)
@@ -402,12 +402,20 @@ class PreprocessedStreamingDataset(IterableDataset):
                     verbose=False
                 )
 
+                # Restore shuffled batch order (undo the HDF5 sort)
+                # Legacy MyDataLoader preserves randperm order within batches;
+                # np.argsort(sort_order) inverts the sort to recover it.
+                unsort_order = np.argsort(sort_order)
+                x = x[unsort_order]
+                c = c[unsort_order]
+
                 # Convert to tensors
                 x = torch.from_numpy(x.astype(np.float32))
                 c = torch.from_numpy(c.astype(np.float32))
 
                 # Apply noise (matches old MyDataLoader lines 80-84)
-                if self.width_noise > 0:
+                # legacy: if not fixed_noise → add fresh noise; else → skip
+                if not self.fixed_noise and self.width_noise > 0:
                     noise = self.noise_distribution.sample(x.shape) * self.width_noise
                     x = x + noise
 
@@ -514,12 +522,16 @@ class LegacyStreamingDataModule:
 
         Creates layer_N keys like load_data does, for preprocessing compatibility.
 
-        IMPORTANT: Use np.float32(1e3) to avoid dtype promotion.
-        Python float (1.e3) promotes float32 → float64 in numpy division.
+        IMPORTANT: uses Python float 1.e3 (float64) to match legacy dtype
+        promotion.  The legacy load_data divides by 1.e3 which promotes
+        HDF5 float32 → numpy float64 through the entire preprocessing
+        pipeline.  We intentionally replicate this for bit-reproducibility.
+        Final casting to float32 happens in the tensor conversion step,
+        exactly matching `torch.tensor(x, dtype=torch.get_default_dtype())`.
         """
-        E_SCALE = np.float32(1e3)
+        E_SCALE = 1.e3  # Python float → float64, matches legacy behavior
         data = {}
-        data["energy"] = (energies.reshape(-1, 1) / E_SCALE).astype(np.float32)
+        data["energy"] = energies.reshape(-1, 1) / E_SCALE
 
         # Split showers into layers using layer_boundaries
         for layer_index, (layer_start, layer_end) in enumerate(
@@ -527,7 +539,7 @@ class LegacyStreamingDataModule:
         ):
             data[f"layer_{layer_index}"] = (
                 showers[..., layer_start:layer_end] / E_SCALE
-            ).astype(np.float32)
+            )
 
         return data
 
@@ -591,8 +603,15 @@ class LegacyStreamingDataModule:
         # Compute valid indices (with caching for performance)
         train_valid = self._compute_filter_indices_with_cache(self.data_path)
 
-        # Train/val split
+        # One-time shuffle before train/val split (matching legacy get_loaders
+        # lines 444-454).  Without this, train/val ordering is HDF5-native
+        # which may be biased if the file has any structure.
         n_total = len(train_valid)
+        if self.shuffle:
+            rng = np.random.RandomState(42)
+            train_valid = train_valid[rng.permutation(n_total)]
+
+        # Train/val split
         n_val = int(n_total * self.val_frac)
         n_train = n_total - n_val
 
@@ -632,7 +651,7 @@ class LegacyStreamingDataModule:
             u0low_cut=self.u0low_cut,
             rew=self.rew,
             dep_cut=self.dep_cut,
-            width_noise=0,  # No noise for validation
+            width_noise=self.width_noise,  # matches legacy: val loader also gets noise
             fixed_noise=False,
             val_frac=0,
             shuffle=False,
