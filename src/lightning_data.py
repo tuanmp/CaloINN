@@ -119,6 +119,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         self.layer_boundaries = self._streaming_dm.layer_boundaries
 
     def _setup_tensor(self, stage=None):
+        dtype = torch.get_default_dtype()
 
         if stage in (None, "fit"):
             x, c, layer_boundaries = self._load_preprocessed_arrays(
