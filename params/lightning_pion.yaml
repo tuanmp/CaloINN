@@ -3,10 +3,10 @@ seed_everything: 2026
 
 trainer:
   stage_dir: /pscratch/sd/p/pmtuan/caloinn
-  run_name: full_training_det_u10_rew85_1e6
+  run_name: full_training_lightning
   accelerator: auto
   devices: 1
-  max_epochs: 1
+  max_epochs: 20
   precision: 32
   callbacks:
     - class_path : lightning.pytorch.callbacks.ModelCheckpoint
@@ -14,7 +14,7 @@ trainer:
         monitor: val_loss
         mode: min
         save_top_k: 1
-        filename: '{epoch}-{val_loss:.2f}'
+        filename: "{epoch}-{val_loss:.2f}"
         save_last: true
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
@@ -47,7 +47,8 @@ data:
   predict_batch_size: 1000
   val_frac: 0.01
   shuffle: False
-  num_workers: 0
+  num_workers: 8
+  use_streaming: true  # Phase 5: memory-efficient HDF5 streaming
   dataset_kwargs:
     xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/binning_dataset_1_pions.xml
     xml_ptype: "pion"
@@ -87,8 +88,8 @@ model:
     weight_decay: 0.01
   scheduler_params:
     max_lr: 0.0001
-    epochs: 1
-    steps_per_epoch: 234
+    epochs: 20
+    steps_per_epoch: 236
   
   cinn_params:
     bayesian: False
