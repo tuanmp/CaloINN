@@ -1,0 +1,104 @@
+# CaloINN Lightning training config for odd-pion discrete coarse-HCAL dataset.
+# Based on CaloINN/params/pions_odd_discrete.yaml
+# Run with: uv run python main.py fit --config params/pions_odd.yaml
+
+seed_everything: 2026
+
+trainer:
+  stage_dir: /pscratch/sd/p/pmtuan/caloinn
+  run_name: full_training_odd_lightning
+  accelerator: auto
+  devices: 1
+  max_epochs: 1000
+  precision: 32
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        mode: min
+        save_top_k: 3
+        filename: "{epoch}-{val_loss:.2f}"
+        save_last: true
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: training_utils.actnorm_warmup.ActNormWarmupCallback
+      init_args:
+        enabled: true
+        num_samples: 1024
+        deterministic_seed: 2026
+        disable_batchnorm_updates: true
+        calibration_source: train_loader
+
+data:
+  data_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_coarse_hcal/trainset_flat_good_order.hdf5"
+  val_data_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_clf_train_coarse_hcal/all_showers_flatten.h5"
+  cond_key: "incident_energies"
+  sample_key: showers
+  eval_dataset: "1-pions"
+  batch_size: 2048
+  predict_batch_size: 1000
+  val_frac: 0.01
+  shuffle: False
+  num_workers: 0           # Must be 0 for streaming
+  use_streaming: true       # Phase 5: memory-efficient HDF5 streaming
+  dataset_kwargs:
+    xml_path: CaloINN/binning_odd_pion.xml
+    xml_ptype: "pion"
+    single_energy: null
+    eps: 1.0e-10
+    u0up_cut: 3.5
+    u0low_cut: 0.0
+    pt_rew: 1.0
+    dep_cut: 600
+    width_noise: 5.0e-6
+
+model:
+  setup_data_sample_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_coarse_hcal/trainset_flat_good_order.hdf5"
+  actnorm_calibration_samples: 1024
+  width_noise: 5.0e-6
+  custom_noise: False
+  xml_path: CaloINN/binning_odd_pion.xml
+  xml_ptype: "pion"
+  enable_diagnostics: false
+  dataset_params:
+    xml_ptype: "pion"
+    single_energy: null
+    eps: 1.0e-10
+    u0up_cut: 3.5
+    u0low_cut: 0.0
+    pt_rew: 1.0
+    dep_cut: 600
+    eval_dataset: "1-pions"
+  optimizer_params:
+    lr: 0.00001
+    betas: [0.9, 0.999]
+    eps: 0.0000000001
+    weight_decay: 0.01
+  scheduler_params:
+    lr_scheduler: one_cycle_lr
+    max_lr: 0.0001
+    epochs: 800
+    steps_per_epoch: 1156
+  cinn_params:
+    bayesian: False
+    alpha: 1.0e-8
+    alpha_logit: 1.0e-6
+    use_extra_dims: True
+    use_norm: False
+    log_cond: True
+    layers_per_block: 4
+    internal_size: 256
+    n_blocks: 12
+    coupling_type: rational_quadratic
+    dropout: 0.0
+    layer_norm: nn.BatchNorm1d
+    layer_act: nn.SiLU
+    num_bins: 10
+    bounds_init: 18
+    permute_soft: False
+    permute_layer: False
+    std_init: -15.0
+    prior_prec: 5000
+    sub_layers: [linear, linear, linear, linear]
+    norm: True
