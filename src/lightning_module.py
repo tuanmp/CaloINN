@@ -386,6 +386,11 @@ class CaloINNLightningModule(pl.LightningModule):
         # Explicit one-time check before the very first optimizer step.
         self.diagnostics.maybe_log_before_first_optimizer_step(self, self._run_batch_diagnostics)
 
+    # Phase 3c: _SkipLastTwoScheduler wrapper needs explicit lr_scheduler_step
+    # because Lightning's _validate_scheduler_api doesn't recognise it.
+    def lr_scheduler_step(self, scheduler, metric=None):
+        scheduler.step()
+
     def training_step(self, batch, batch_idx):
         x, c = batch
         # Phase 3: Noise is applied by the dataloader (matching legacy MyDataLoader).

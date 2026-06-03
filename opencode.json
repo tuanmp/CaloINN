@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+    "permission": {
+        "HDF5_USE_FILE_LOCKING=FALSE uv *": "allow"
+    }
+}

@@ -70,13 +70,14 @@ data:
 # ── Model (mirrors legacy architecture and hyperparameters) ──
 model:
   setup_data_sample_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_coarse_hcal/trainset_flat_good_order.hdf5"
-  actnorm_calibration_samples: 1024
+  actnorm_calibration_samples: 1000000
   max_samples: 1000000           # matches legacy: 1M random samples for init
   width_noise: 5.0e-6           # matches legacy
   custom_noise: False
   xml_path: CaloINN/binning_odd_pion.xml
   xml_ptype: "pion"
   enable_diagnostics: false
+  init_from_legacy_train_split: false
   dataset_params:
     xml_ptype: "pion"
     single_energy: null
