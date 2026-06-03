@@ -145,3 +145,4 @@ queuing_system
 notebooks
 
 worktree/
+*logs/

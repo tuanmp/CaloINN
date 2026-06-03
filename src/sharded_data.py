@@ -31,6 +31,7 @@ import data_util
 # HDF5 read-cache settings — small enough for per-worker handles
 _H5_RDCC = {"rdcc_nbytes": 64 * 1024 * 1024, "rdcc_nslots": 4093}
 
+dtype = torch.get_default_dtype()
 
 # ═══════════════════════════════════════════════════════════════════════
 # 1.  Efficient sorted HDF5 row reader
@@ -154,15 +155,15 @@ class _CaloINNDataset(Dataset):
     def __getitem__(self, index: int):
         x, c = self._get_numpy_batch(np.array([index]))
         return (
-            torch.from_numpy(x[0]).float(),
-            torch.from_numpy(c[0]).float(),
+            torch.from_numpy(x[0]).to(dtype),
+            torch.from_numpy(c[0]).to(dtype),
         )
 
     def __getitems__(self, indices):
         idx = np.asarray(indices, dtype=np.int64)
         x, c = self._get_numpy_batch(idx)
         return [
-            (torch.from_numpy(x[i]).float(), torch.from_numpy(c[i]).float())
+            (torch.from_numpy(x[i]).to(dtype), torch.from_numpy(c[i]).to(dtype))
             for i in range(len(idx))
         ]
 

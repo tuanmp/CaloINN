@@ -1,16 +1,16 @@
 import sys
 import time
 
+import numpy as np
 import torch
 import torch.distributions as dist
-import numpy as np
-
-import data_util
-from model import CINN
-import plotting
-from plotter import Plotter
 
 import caloch_eval.evaluate as evaluate
+import data_util
+import plotting
+from model import CINN
+from plotter import Plotter
+
 
 class LogUniform(dist.TransformedDistribution):
     def __init__(self, lb, ub):

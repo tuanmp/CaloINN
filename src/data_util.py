@@ -53,12 +53,12 @@ def load_data(data_file, particle_type,  xml_filename, threshold=1e-5, energy=No
     else:
         if indices is not None:
             sorted_indices = np.sort(indices)
-            data["energy"] = data_file["incident_energies"][sorted_indices] / 1.e3
+            data["energy"] = data_file["incident_energies"][sorted_indices].reshape(-1, 1) / 1.e3
             for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
                 data[f"layer_{layer_index}"] = data_file["showers"][sorted_indices][..., layer_start:layer_end]/ 1.e3
             # print(data[f"layer_{layer_index}"].shape)
         else:
-            data["energy"] = data_file["incident_energies"][:] / 1.e3
+            data["energy"] = data_file["incident_energies"][:].reshape(-1, 1) / 1.e3
             for layer_index, (layer_start, layer_end) in enumerate(zip(layer_boundaries[:-1], layer_boundaries[1:])):
                 data[f"layer_{layer_index}"] = data_file["showers"][..., layer_start:layer_end] / 1.e3
             # print(data[f"layer_{layer_index}"].shape)
@@ -132,7 +132,7 @@ def get_energy_dims(x, c, layer_boundaries, eps=1.e-10):
         layer_energies.append(layer_energy)
         
     layer_energies_np = np.array(layer_energies).T[0]
-        
+
     # Compute the generalized extra dimensions
     extra_dims = [np.sum(layer_energies_np, axis=1, keepdims=True) / c]
 
@@ -436,7 +436,6 @@ def get_loaders(filename, xml_filename, particle_type, val_frac, batch_size,
     
     # load the data from the hdf5 file
     data, layer_boundaries = load_data(filename, particle_type, xml_filename=xml_filename, energy=energy)
-
     # preprocess the data and append the extra dims
     x, c = preprocess(data, layer_boundaries, eps, u0up_cut=u0up_cut, u0low_cut=u0low_cut, rew=rew, dep_cut=dep_cut)
 

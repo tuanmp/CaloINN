@@ -72,7 +72,7 @@ data:
 model:
   setup_data_sample_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_coarse_hcal/trainset_flat_good_order.hdf5"
   actnorm_calibration_samples: 1000000
-  max_samples: 1000000           # matches legacy: 1M random samples for init
+  max_samples: 10000           # matches legacy: 1M random samples for init
   width_noise: 5.0e-6           # matches legacy
   custom_noise: False
   xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml

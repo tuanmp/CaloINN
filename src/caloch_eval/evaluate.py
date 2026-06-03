@@ -40,20 +40,26 @@
 import argparse
 import os
 import pickle
+import re
+import sys
+from pathlib import Path
 
-import numpy as np
-import matplotlib.pyplot as plt
 import h5py
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
-from torch.utils.data import TensorDataset, DataLoader
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import roc_auc_score
 from sklearn.calibration import calibration_curve
 from sklearn.isotonic import IsotonicRegression
+from sklearn.metrics import accuracy_score, roc_auc_score
+from torch.utils.data import DataLoader, TensorDataset
+
+# Support direct script execution: `uv run src/caloch_eval/evaluate.py ...`
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import caloch_eval.HighLevelFeatures as HLF
-
 from caloch_eval.evaluate_plotting_helper import *
+from caloch_eval.XMLHandler import XMLHandler
 
 torch.set_default_dtype(torch.float64)
 
@@ -75,6 +81,9 @@ def define_parser():
                         help='Name and path of the .hdf5 file to be used as reference. '+\
                         'A .pkl file is created at the same location '+\
                         'in the first run for faster runtime in subsequent runs.')
+    parser.add_argument("--binning_file", "-b", required=False, default=None, type=Path, 
+                        help="Path to the binning file (xml) that contains the definition of the calorimeter " \
+                        "layers and the binning for the high-level features. Should be the same as the one used for training.")
     parser.add_argument('--mode', '-m', default='all',
                         choices=['all', 'no-cls', 'avg', 'avg-E', 'hist-p', 'hist-chi', 'hist',
                                  'cls-low', 'cls-low-normed', 'cls-high'],
@@ -98,6 +107,8 @@ def define_parser():
     #Additional argument for classifier cut (0.001 is 1KeV?)
     parser.add_argument('--cut', type=float)
     parser.add_argument('--energy', nargs="*", type=float, default=None)
+    parser.add_argument('--energy_tolerance', type=float, default=1e-3,
+                        help='Tolerance for target-energy matching with abs(E - target) < tolerance.')
     #parser.add_argument('--source_dir', default='source/',
     #                    help='Folder that contains (soft links to) files required for'+\
     #                    ' comparative evaluations (high level features stored in .pkl or '+\
@@ -162,7 +173,9 @@ class DNN(torch.nn.Module):
         x = self.layers(x)
         return x
 
-def prepare_low_data_for_classifier(hdf5_file, hlf_class, label, cut=0.0, normed=False, single_energy=None):
+def prepare_low_data_for_classifier(hdf5_file, hlf_class, label, cut=0.0, normed=False,
+                                    single_energy=None, energy_tolerance=1e-3,
+                                    dataset=None):
     """ takes hdf5_file, extracts Einc and voxel energies, appends label, returns array """
     if normed:
         E_norm_rep = []
@@ -173,7 +186,13 @@ def prepare_low_data_for_classifier(hdf5_file, hlf_class, label, cut=0.0, normed
             E_norm.append(hlf_class.GetElayers()[layer_id].reshape(-1, 1))
         E_norm_rep = np.concatenate(E_norm_rep, axis=1)
         E_norm = np.concatenate(E_norm, axis=1)
-    voxel, E_inc = extract_shower_and_energy(hdf5_file, label, single_energy=single_energy)
+    voxel, E_inc = extract_shower_and_energy(
+        hdf5_file,
+        label,
+        single_energy=single_energy,
+        energy_tolerance=energy_tolerance,
+        dataset=dataset,
+    )
 
     np.nan_to_num(voxel, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     
@@ -187,9 +206,16 @@ def prepare_low_data_for_classifier(hdf5_file, hlf_class, label, cut=0.0, normed
         ret = np.concatenate([np.log10(E_inc), voxel, label*np.ones_like(E_inc)], axis=1)
     return ret
 
-def prepare_high_data_for_classifier(hdf5_file, hlf_class, label, cut=0.0, single_energy=None):
+def prepare_high_data_for_classifier(hdf5_file, hlf_class, label, cut=0.0, single_energy=None,
+                                     energy_tolerance=1e-3, dataset=None):
     """ takes hdf5_file, extracts high-level features, appends label, returns array """
-    voxel, E_inc = extract_shower_and_energy(hdf5_file, label, single_energy=single_energy)
+    voxel, E_inc = extract_shower_and_energy(
+        hdf5_file,
+        label,
+        single_energy=single_energy,
+        energy_tolerance=energy_tolerance,
+        dataset=dataset,
+    )
     voxel[voxel<cut] = 0.0
     E_tot = hlf_class.GetEtot()
     E_layer = []
@@ -387,7 +413,15 @@ def check_file(given_file, arg, which=None):
     """ checks if the provided file has the expected structure based on the dataset """
     print("Checking if {} file has the correct form ...".format(
         which if which is not None else 'provided'))
-    num_features = {'1-photons': 368, '1-pions': 533, '2': 6480, '3': 40500}[arg.dataset]
+    default_num_features = {'1-photons': 368, '1-pions': 533, '2': 6480, '3': 40500}[arg.dataset]
+    num_features = default_num_features
+
+    if getattr(arg, 'binning_file', None) is not None:
+        particle = {'1-photons': 'photon', '1-pions': 'pion',
+                    '2': 'electron', '3': 'electron'}[arg.dataset]
+        xml = XMLHandler(particle, filename=str(arg.binning_file))
+        num_features = xml.GetTotalNumberOfBins()
+
     num_events = given_file['incident_energies'].shape[0]
     assert given_file['showers'].shape[0] == num_events, \
         ("Number of energies provided does not match number of showers, {} != {}".format(
@@ -400,24 +434,39 @@ def check_file(given_file, arg, which=None):
     print("Checking if {} file has the correct form: DONE \n".format(
         which if which is not None else 'provided'))
 
-def extract_shower_and_energy(given_file, which, single_energy=None):
+def extract_shower_and_energy(given_file, which, single_energy=None, energy_tolerance=1e-3,
+                              dataset=None):
     """ reads .hdf5 file and returns samples and their energy """
     print("Extracting showers from {} file ...".format(which))
+    all_energies = given_file["incident_energies"][:]
+    if dataset in ['1-photons', '1-pions']:
+        # DS1 energies are discrete by construction; round to remove float jitter.
+        all_energies = np.rint(all_energies)
+
     if single_energy is not None:
         if len(single_energy) == 1:
-            energy_mask = np.rint(given_file["incident_energies"][:]) == single_energy[0]
+            energy_mask = np.abs(all_energies - single_energy[0]) < energy_tolerance
         elif len(single_energy) == 2:
-            energy_mask = (np.rint(given_file["incident_energies"][:]) >= single_energy[0]) & \
-                            (np.rint(given_file["incident_energies"][:]) <= single_energy[1])
+            energy_mask = (all_energies >= single_energy[0]) & \
+                          (all_energies <= single_energy[1])
         else:
             raise ValueError
-        energy = given_file["incident_energies"][:][energy_mask].reshape(-1, 1)
+        energy = all_energies[energy_mask].reshape(-1, 1)
         shower = given_file["showers"][:][energy_mask.flatten()]
     else:
         shower = given_file['showers'][:]
-        energy = given_file['incident_energies'][:]
+        energy = all_energies
     print("Extracting showers from {} file: DONE.\n".format(which))
     return shower, energy
+
+
+def get_target_energies(energy_array, dataset):
+    """Return stable target energies for plotting/selection."""
+    flat_energy = np.asarray(energy_array).reshape(-1)
+    if dataset in ['1-photons', '1-pions']:
+        # DS1 uses discrete incident energies; round to remove float jitter.
+        return np.sort(np.unique(np.rint(flat_energy)))
+    return np.sort(np.unique(flat_energy))
 
 def load_reference(filename):
     """ Load existing pickle with high-level features for reference in plots """
@@ -499,12 +548,18 @@ def main(raw_args=None):
     showers = []
     energies = []
 
+    binning_file = args.binning_file if args.binning_file is not None else 'binning_dataset_{}.xml'.format(args.dataset.replace('-', '_'))
     for n, file in enumerate(list_files):
         hlfs.append(HLF.HighLevelFeatures(particle,
-                                filename='binning_dataset_{}.xml'.format(
-                                    args.dataset.replace('-', '_')))
+                                filename=binning_file)
                     )
-        shower, energy = extract_shower_and_energy(list_files[n], which='input', single_energy=args.energy)
+        shower, energy = extract_shower_and_energy(
+            list_files[n],
+            which='input',
+            single_energy=args.energy,
+            energy_tolerance=args.energy_tolerance,
+            dataset=args.dataset,
+        )
         showers.append(shower)
         energies.append(energy)
 
@@ -531,8 +586,13 @@ def main(raw_args=None):
     reference_file = h5py.File(args.reference_file, 'r')
     check_file(reference_file, args, which='reference')
 
-    reference_shower, reference_energy = extract_shower_and_energy(reference_file,
-                                                                   which='reference', single_energy=args.energy)
+    reference_shower, reference_energy = extract_shower_and_energy(
+        reference_file,
+        which='reference',
+        single_energy=args.energy,
+        energy_tolerance=args.energy_tolerance,
+        dataset=args.dataset,
+    )
     reference_shower[reference_shower<args.cut] = 0.0
 
     #if os.path.exists(os.path.join(args.source_dir, args.reference_file_name + '.pkl')):
@@ -542,9 +602,13 @@ def main(raw_args=None):
     #else:
     print("Computing .pkl reference")
     reference_hlf = HLF.HighLevelFeatures(particle,
-                                              filename='binning_dataset_{}.xml'.format(
-                                                  args.dataset.replace('-', '_')))
+                                              filename=binning_file)
     reference_hlf.Einc = reference_energy
+
+    if len(get_target_energies(reference_energy, args.dataset)) > 50:
+        print(get_target_energies(reference_energy, args.dataset))
+        raise ValueError("Reference file has more than 50 energy levels, which is too much for the high-level features to be computed in a reasonable time. " 
+        "Please provide a reference file with fewer unique incident energies.")
     #save_reference(reference_hlf,
     #                 os.path.join(args.source_dir, args.reference_file_name + '.pkl'))
 
@@ -593,39 +657,69 @@ def main(raw_args=None):
     if args.mode in ['all', 'no-cls', 'avg-E']:
         print("Plotting average showers for different energies ...")
         if '1' in args.dataset:
-            target_energies = 2**np.linspace(8, 23, 16)
+            target_energies = get_target_energies(reference_energy, args.dataset)
             plot_title = ['shower average at E = {} MeV'.format(int(en)) for en in target_energies]
+            for i, target_energy in enumerate(target_energies):
+                filename = 'average_shower_dataset_{}_E_{}.pdf'.format(args.dataset, target_energy)
+
+                which_showers = (np.abs(energies[0].squeeze() - target_energy) < args.energy_tolerance)
+                if not np.any(which_showers):
+                    continue
+
+                hlfs[0].DrawAverageShower(
+                    showers[0][which_showers],
+                    filename=os.path.join(args.output_dir, filename),
+                    title=plot_title[i],
+                )
+
+                if not hasattr(reference_hlf, 'avg_shower_E'):
+                    reference_hlf.avg_shower_E = {}
+
+                if target_energy not in reference_hlf.avg_shower_E:
+                    which_showers_ref = (
+                        np.abs(reference_hlf.Einc.squeeze() - target_energy) < args.energy_tolerance
+                    )
+                    if not np.any(which_showers_ref):
+                        continue
+                    reference_hlf.avg_shower_E[target_energy] = \
+                        reference_shower[which_showers_ref].mean(axis=0, keepdims=True)
+
+                hlfs[0].DrawAverageShower(
+                    reference_hlf.avg_shower_E[target_energy],
+                    filename=os.path.join(args.output_dir, 'reference_' + filename),
+                    title='reference ' + plot_title[i],
+                )
         else:
             target_energies = 10**np.linspace(3, 6, 4)
             plot_title = []
             for i in range(3, 7):
                 plot_title.append('shower average for E in [{}, {}] MeV'.format(10**i, 10**(i+1)))
-        for i in range(len(target_energies)-1):
-            filename = 'average_shower_dataset_{}_E_{}.pdf'.format(args.dataset,
-                                                                   target_energies[i])
-            which_showers = ((energies[0] >= target_energies[i]) & \
-                             (energies[0] < target_energies[i+1])).squeeze()
-            hlfs[0].DrawAverageShower(showers[0][which_showers],
-                                  filename=os.path.join(args.output_dir, filename),
-                                  title=plot_title[i])
-            if hasattr(reference_hlf, 'avg_shower_E'):
-                pass
-            else:
-                reference_hlf.avg_shower_E = {}
-            if target_energies[i] in reference_hlf.avg_shower_E:
-                pass
-            else:
-                which_showers = ((reference_hlf.Einc >= target_energies[i]) & \
-                             (reference_hlf.Einc < target_energies[i+1])).squeeze()
-                reference_hlf.avg_shower_E[target_energies[i]] = \
-                    reference_shower[which_showers].mean(axis=0, keepdims=True)
-                #save_reference(reference_hlf,
-                #               os.path.join(args.source_dir, args.reference_file_name + '.pkl'))
+            for i in range(len(target_energies)-1):
+                filename = 'average_shower_dataset_{}_E_{}.pdf'.format(args.dataset,
+                                                                       target_energies[i])
+                which_showers = ((energies[0] >= target_energies[i]) & \
+                                 (energies[0] < target_energies[i+1])).squeeze()
+                hlfs[0].DrawAverageShower(showers[0][which_showers],
+                                      filename=os.path.join(args.output_dir, filename),
+                                      title=plot_title[i])
+                if hasattr(reference_hlf, 'avg_shower_E'):
+                    pass
+                else:
+                    reference_hlf.avg_shower_E = {}
+                if target_energies[i] in reference_hlf.avg_shower_E:
+                    pass
+                else:
+                    which_showers = ((reference_hlf.Einc >= target_energies[i]) & \
+                                 (reference_hlf.Einc < target_energies[i+1])).squeeze()
+                    reference_hlf.avg_shower_E[target_energies[i]] = \
+                        reference_shower[which_showers].mean(axis=0, keepdims=True)
+                    #save_reference(reference_hlf,
+                    #               os.path.join(args.source_dir, args.reference_file_name + '.pkl'))
 
-            hlfs[0].DrawAverageShower(reference_hlf.avg_shower_E[target_energies[i]],
-                                  filename=os.path.join(args.output_dir,
-                                                        'reference_'+filename),
-                                  title='reference '+plot_title[i])
+                hlfs[0].DrawAverageShower(reference_hlf.avg_shower_E[target_energies[i]],
+                                      filename=os.path.join(args.output_dir,
+                                                            'reference_'+filename),
+                                      title='reference '+plot_title[i])
 
         print("Plotting average shower for different energies: DONE.\n")
 
@@ -684,18 +778,41 @@ def main(raw_args=None):
 
             if args.mode in ['all', 'cls-low']:
                 source_array = prepare_low_data_for_classifier(list_files[n], hlfs[n], 0., cut=cut,
-                                                               normed=False, single_energy=args.energy)
+                                                               normed=False, single_energy=args.energy,
+                                                               energy_tolerance=args.energy_tolerance,
+                                                               dataset=args.dataset)
                 reference_array = prepare_low_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
-                                                                  normed=False, single_energy=args.energy)
+                                                                  normed=False, single_energy=args.energy,
+                                                                  energy_tolerance=args.energy_tolerance,
+                                                                  dataset=args.dataset)
             elif args.mode in ['cls-low-normed']:
                 source_array = prepare_low_data_for_classifier(list_files[n], hlfs[n], 0., cut=cut,
-                                                               normed=True, single_energy=args.energy)
+                                                               normed=True, single_energy=args.energy,
+                                                               energy_tolerance=args.energy_tolerance,
+                                                               dataset=args.dataset)
                 reference_array = prepare_low_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
-                                                                  normed=True, single_energy=args.energy)
+                                                                  normed=True, single_energy=args.energy,
+                                                                  energy_tolerance=args.energy_tolerance,
+                                                                  dataset=args.dataset)
             elif args.mode in ['cls-high']:
-                source_array = prepare_high_data_for_classifier(list_files[n], hlfs[n], 0., cut=cut, single_energy=args.energy)
-                reference_array = prepare_high_data_for_classifier(reference_file, reference_hlf, 1., cut=cut,
-                                                                    single_energy=args.energy)
+                source_array = prepare_high_data_for_classifier(
+                    list_files[n],
+                    hlfs[n],
+                    0.,
+                    cut=cut,
+                    single_energy=args.energy,
+                    energy_tolerance=args.energy_tolerance,
+                    dataset=args.dataset,
+                )
+                reference_array = prepare_high_data_for_classifier(
+                    reference_file,
+                    reference_hlf,
+                    1.,
+                    cut=cut,
+                    single_energy=args.energy,
+                    energy_tolerance=args.energy_tolerance,
+                    dataset=args.dataset,
+                )
 
             train_data, test_data, val_data = ttv_split(source_array, reference_array)
 

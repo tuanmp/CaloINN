@@ -34,20 +34,20 @@ class ResultPlotter(L.Callback):
     def on_predict_epoch_end(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
         
         rank_zero_info(f"Generating result plots to {self.plot_dir}...")
-        rank_zero_info("Using the following command to evaluate results:")
+        rank_zero_info("Use the following command to evaluate results: \n")
         rank_zero_info(
              f"evaluate -i {os.path.join(trainer.default_root_dir, 'predictions', self.prediction_file)} "
              f"-r {self.reference_file} "
-             f"-m all -d {trainer.datamodule.eval_dataset} "
-             f"--output_dir {self.plot_dir}"
+             f"-d {trainer.datamodule.eval_dataset} "
+             f"--output_dir {self.plot_dir} --cut 1.515e-3 --mode hist-p"
         )
         evaluate.main(
             (
                 f"-i {os.path.join(trainer.default_root_dir, 'predictions', self.prediction_file)} "
                 f"-r {self.reference_file} "
-                f"-m all -d {trainer.datamodule.eval_dataset} "
-                f"--output_dir {self.plot_dir}"
+                f"-d {trainer.datamodule.eval_dataset} "
+                f"--output_dir {self.plot_dir} --cut 1.515e-3 --mode hist-p"
             ).split()
         )
 
-        rank_zero_info(f"Finished generating result plots to {self.plot_dir}.")
+        rank_zero_info(f"\nFinished generating result plots to {self.plot_dir}.")

@@ -5,11 +5,15 @@ mode: primary
 temperature: 0.2
 permission:
   bash:
-    "*": "ask"
+    "*": "allow"
     "rm -rf *": "ask"
     "rm -rf /*": "deny"
     "sudo *": "deny"
     "> /dev/*": "deny"
+    "uv *": "allow"
+    "HDF5_USE_FILE_LOCKING=FALSE uv": "allow"
+    "git add *": "allow"
+    "git commit *": "allow"
   edit:
     "**/*.env*": "deny"
     "**/*.key": "deny"
