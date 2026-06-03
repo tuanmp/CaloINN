@@ -63,9 +63,11 @@ class TestStreamingDataModuleShapes(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
         # Clean up cache files
-        cache_path = TEST_CONFIG['data_path'] + ".valid_indices_cache.npy"
-        if os.path.exists(cache_path):
-            os.remove(cache_path)
+        # Clean up cache files (globs now that cache key includes filter hash)
+        import glob
+        for cf in glob.glob(TEST_CONFIG['data_path'] + ".filter_*.npy"):
+            if os.path.exists(cf):
+                os.remove(cf)
 
     def _create_dm(self, **kwargs):
         """Create DM with test config plus any overrides."""
@@ -199,9 +201,11 @@ class TestStreamingDataModuleParity(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        cache_path = TEST_CONFIG['data_path'] + ".valid_indices_cache.npy"
-        if os.path.exists(cache_path):
-            os.remove(cache_path)
+        # Clean up cache files (globs now that cache key includes filter hash)
+        import glob
+        for cf in glob.glob(TEST_CONFIG['data_path'] + ".filter_*.npy"):
+            if os.path.exists(cf):
+                os.remove(cf)
 
     def _create_dm(self, **kwargs):
         config = {**TEST_CONFIG, **kwargs}
@@ -236,9 +240,11 @@ class TestStreamingDataModuleParity(unittest.TestCase):
         print("\n=== test_non_shuffled_parity ===")
 
         # Ensure clean cache
-        cache_path = TEST_CONFIG['data_path'] + ".valid_indices_cache.npy"
-        if os.path.exists(cache_path):
-            os.remove(cache_path)
+        # Clean up cache files (globs now that cache key includes filter hash)
+        import glob
+        for cf in glob.glob(TEST_CONFIG['data_path'] + ".filter_*.npy"):
+            if os.path.exists(cf):
+                os.remove(cf)
 
         dm1 = self._create_dm(shuffle=False, width_noise=0.0)
         dm1.setup('fit')
@@ -313,9 +319,11 @@ class TestStreamingDataModuleMemory(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        cache_path = TEST_CONFIG['data_path'] + ".valid_indices_cache.npy"
-        if os.path.exists(cache_path):
-            os.remove(cache_path)
+        # Clean up cache files (globs now that cache key includes filter hash)
+        import glob
+        for cf in glob.glob(TEST_CONFIG['data_path'] + ".filter_*.npy"):
+            if os.path.exists(cf):
+                os.remove(cf)
 
     def test_memory_constant_regardless_of_iteration(self):
         """
@@ -391,9 +399,11 @@ class TestStreamingDataModuleSpeed(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        cache_path = TEST_CONFIG['data_path'] + ".valid_indices_cache.npy"
-        if os.path.exists(cache_path):
-            os.remove(cache_path)
+        # Clean up cache files (globs now that cache key includes filter hash)
+        import glob
+        for cf in glob.glob(TEST_CONFIG['data_path'] + ".filter_*.npy"):
+            if os.path.exists(cf):
+                os.remove(cf)
 
     def test_iteration_speed(self):
         """Test that iteration is fast enough for training."""
@@ -468,9 +478,11 @@ class TestStreamingDataModuleCaching(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp(prefix="caloinn_streaming_test_")
         # Ensure no cached indices
-        cache_path = TEST_CONFIG['data_path'] + ".valid_indices_cache.npy"
-        if os.path.exists(cache_path):
-            os.remove(cache_path)
+        # Clean up cache files (globs now that cache key includes filter hash)
+        import glob
+        for cf in glob.glob(TEST_CONFIG['data_path'] + ".filter_*.npy"):
+            if os.path.exists(cf):
+                os.remove(cf)
 
     def tearDown(self):
         import shutil

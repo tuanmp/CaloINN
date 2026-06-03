@@ -229,19 +229,20 @@ class PreprocessedStreamingDataset(IterableDataset):
             if self.shuffle:
                 rng = np.random.RandomState(42)
                 self.valid_indices = self.valid_indices[rng.permutation(len(self.valid_indices))]
+            # Compute train/val split (only for standalone mode)
+            n_total = len(self.valid_indices)
+            n_val = int(n_total * val_frac)
+            n_train = n_total - n_val
+            if is_train:
+                self.indices = self.valid_indices[:n_train]
+            else:
+                self.indices = self.valid_indices[n_train:]
         else:
+            # Pre-split via LegacyStreamingDataModule: indices are already
+            # the correct train/val subset.  No internal split needed.
             self.valid_indices = precomputed_valid_indices
-            self.num_original = len(precomputed_valid_indices)  # Approximation
-
-        # Compute train/val split
-        n_total = len(self.valid_indices)
-        n_val = int(n_total * val_frac)
-        n_train = n_total - n_val
-
-        if is_train:
-            self.indices = self.valid_indices[:n_train]
-        else:
-            self.indices = self.valid_indices[n_train:]
+            self.num_original = len(precomputed_valid_indices)
+            self.indices = precomputed_valid_indices
 
         # Precompute max batch
         if self.drop_last:
@@ -414,9 +415,21 @@ class PreprocessedStreamingDataset(IterableDataset):
                 c = torch.from_numpy(c.astype(np.float32))
 
                 # Apply noise (matches old MyDataLoader lines 80-84)
-                # legacy: if not fixed_noise → add fresh noise; else → skip
-                if not self.fixed_noise and self.width_noise > 0:
-                    noise = self.noise_distribution.sample(x.shape) * self.width_noise
+                # Legacy: if not fixed_noise → fresh noise each epoch;
+                #         if fixed_noise → noise pre-applied at init (deterministic).
+                # Streaming: if fixed_noise, generate deterministic noise per
+                #         sample index so the same sample gets the same noise
+                #         regardless of batch/epoch (emulates init-time pre-apply).
+                if self.width_noise > 0:
+                    if self.fixed_noise:
+                        # Deterministic noise per HDF5 index
+                        rng = np.random.RandomState(hdf5_unsorted.astype(np.int64))
+                        noise = torch.from_numpy(
+                            (rng.uniform(0, 1, x.shape).astype(np.float32))
+                            * self.width_noise
+                        )
+                    else:
+                        noise = self.noise_distribution.sample(x.shape) * self.width_noise
                     x = x + noise
 
                 # Return clones (same as old line 81: torch.clone(self.add_noise(self.data[idx])))
@@ -544,8 +557,18 @@ class LegacyStreamingDataModule:
         return data
 
     def _compute_filter_indices_with_cache(self, data_path: str) -> np.ndarray:
-        """Compute valid indices with caching to avoid recomputation."""
-        cache_path = data_path + ".valid_indices_cache.npy"
+        """Compute valid indices with caching to avoid recomputation.
+
+        Cache key includes filter parameters so changing u0up_cut, dep_cut,
+        etc. invalidates stale caches.
+        """
+        import hashlib
+        param_str = (
+            f"{self.u0up_cut}_{self.u0low_cut}_{self.dep_cut}_{self.eps}_"
+            f"{self.xml_ptype}_{self.xml_path}"
+        )
+        param_hash = hashlib.md5(param_str.encode()).hexdigest()[:8]
+        cache_path = f"{data_path}.filter_{param_hash}.npy"
 
         if os.path.exists(cache_path):
             return np.load(cache_path)
