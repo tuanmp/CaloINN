@@ -22,6 +22,7 @@ import h5py
 import numpy as np
 import torch
 import tqdm
+from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 
 import data_util
@@ -211,14 +212,15 @@ class _CaloINNDataset(Dataset):
 # 4.  Lightning DataModule
 # ═══════════════════════════════════════════════════════════════════════
 
-class ShardedCaloINNDataModule:
+class ShardedCaloINNDataModule(LightningDataModule):
     """Lightning DataModule backed by map-style HDF5 datasets.
 
     Replaces IterableDataset-based LegacyStreamingDataModule with
     proper multi-worker DataLoader support.  Preprocessing and noise
     happen on-the-fly in workers.
 
-    Config-compatible with the same YAML keys as CaloINNDataModule.
+    Can be used directly with LightningCLI or via CaloINNDataModule
+    with use_sharded=True.
     """
 
     def __init__(
@@ -242,6 +244,8 @@ class ShardedCaloINNDataModule:
         eval_dataset: str = "1-pions",
         **kwargs,
     ):
+        super().__init__()
+        self.save_hyperparameters()
         self.data_path = data_path
         self.val_data_path = val_data_path
         self.batch_size = batch_size
