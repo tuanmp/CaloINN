@@ -2,6 +2,12 @@ import os
 import sys
 
 import lightning as pl
+import torch
+
+# Force float32 — legacy preprocess promotes float32→float64 via 1.e3,
+# and CINN model must receive float32 inputs.  Must be set before CLI
+# instantiates anything.
+torch.set_default_dtype(torch.float32)
 
 REPO_ROOT = os.path.abspath(os.path.dirname(__file__))
 SRC_DIR = os.path.join(REPO_ROOT, "src")
