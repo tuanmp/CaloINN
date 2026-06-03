@@ -154,19 +154,15 @@ class _CaloINNDataset(Dataset):
     def __getitem__(self, index: int):
         x, c = self._get_numpy_batch(np.array([index]))
         return (
-            torch.from_numpy(x[0]),
-            torch.from_numpy(c[0]),
+            torch.from_numpy(x[0]).float(),
+            torch.from_numpy(c[0]).float(),
         )
-
-    # ------------------------------------------------------------------
-    #  Per-batch vectorised access (fast path via DataLoader)
-    # ------------------------------------------------------------------
 
     def __getitems__(self, indices):
         idx = np.asarray(indices, dtype=np.int64)
         x, c = self._get_numpy_batch(idx)
         return [
-            (torch.from_numpy(x[i]), torch.from_numpy(c[i]))
+            (torch.from_numpy(x[i]).float(), torch.from_numpy(c[i]).float())
             for i in range(len(idx))
         ]
 
