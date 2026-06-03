@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 from typing import Optional, Tuple
 
 import h5py
@@ -70,6 +71,7 @@ class _RawHDF5Source:
     def __init__(self, file_path: str):
         self.file_path = file_path
         self._file = None
+        self._lock = threading.Lock()
         with h5py.File(self.file_path, "r") as handle:
             self._length = int(handle["showers"].shape[0])
 
@@ -78,8 +80,15 @@ class _RawHDF5Source:
 
     def _get_file(self):
         if self._file is None:
-            self._file = h5py.File(self.file_path, "r", **_H5_RDCC)
+            with self._lock:
+                if self._file is None:  # double-check under lock
+                    self._file = h5py.File(self.file_path, "r", **_H5_RDCC)
         return self._file
+
+    def close(self):
+        if self._file is not None:
+            self._file.close()
+            self._file = None
 
     def read_rows(self, indices: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         handle = self._get_file()
@@ -134,11 +143,6 @@ class _CaloINNDataset(Dataset):
         self.dep_cut = dep_cut
         self.width_noise = width_noise
         self.fixed_noise = fixed_noise
-
-        # Fast noise distribution (same as legacy MyDataLoader)
-        self._noise_dist = torch.distributions.Uniform(
-            torch.tensor(0.0), torch.tensor(1.0)
-        )
 
     def __len__(self) -> int:
         return int(self.indices.shape[0])
@@ -198,9 +202,13 @@ class _CaloINNDataset(Dataset):
         # Add noise (matches legacy MyDataLoader)
         if self.width_noise > 0:
             if self.fixed_noise:
-                # Deterministic noise per HDF5 index
-                rng = np.random.RandomState(source_indices.astype(np.int64))
-                noise = rng.uniform(0, 1, x.shape).astype(np.float32) * self.width_noise
+                # Per-sample deterministic noise: each HDF5 index gets its
+                # own seeded RNG, making noise independent of batch composition.
+                noise = np.empty_like(x, dtype=np.float32)
+                for i, h5idx in enumerate(source_indices.astype(np.int64)):
+                    rng = np.random.RandomState(int(h5idx))
+                    noise[i] = rng.uniform(0, 1, x.shape[1:]).astype(np.float32)
+                noise *= self.width_noise
             else:
                 noise = np.random.uniform(0, 1, x.shape).astype(np.float32) * self.width_noise
             x = x + noise
@@ -293,41 +301,44 @@ class ShardedCaloINNDataModule(LightningDataModule):
             return np.load(cache_path)
 
         source = _RawHDF5Source(data_path)
-        n_samples = len(source)
-        chunk_size = 100000
-        all_valid = []
+        try:
+            n_samples = len(source)
+            chunk_size = 100000
+            all_valid = []
 
-        pbar = tqdm.tqdm(
-            total=n_samples, unit="samples",
-            desc="Computing filter indices (will cache)",
-        )
-
-        for start in range(0, n_samples, chunk_size):
-            end = min(start + chunk_size, n_samples)
-            idx = np.arange(start, end)
-            showers, energies = source.read_rows(idx)
-
-            data = _build_data_dict(showers, energies, self.layer_boundaries)
-
-            energy, layers = data_util.get_energy_and_sorted_layers(data)
-            x_raw = np.concatenate(layers, axis=1)
-            c_raw = energy
-            c_raw, extra_dims = data_util.get_energy_dims(
-                x_raw, c_raw, self.layer_boundaries, self.eps
+            pbar = tqdm.tqdm(
+                total=n_samples, unit="samples",
+                desc="Computing filter indices (will cache)",
             )
 
-            mask = np.sum(x_raw, axis=1) >= 0
-            mask &= extra_dims[:, 0] < self.u0up_cut
-            mask &= extra_dims[:, 0] >= self.u0low_cut
-            mask &= ((x_raw < self.dep_cut).prod(-1) != 0)
+            for start in range(0, n_samples, chunk_size):
+                end = min(start + chunk_size, n_samples)
+                idx = np.arange(start, end)
+                showers, energies = source.read_rows(idx)
 
-            all_valid.append(idx[mask])
-            pbar.update(len(idx))
+                data = _build_data_dict(showers, energies, self.layer_boundaries)
 
-        pbar.close()
-        valid = np.concatenate(all_valid)
-        np.save(cache_path, valid)
-        return valid
+                energy, layers = data_util.get_energy_and_sorted_layers(data)
+                x_raw = np.concatenate(layers, axis=1)
+                c_raw = energy
+                c_raw, extra_dims = data_util.get_energy_dims(
+                    x_raw, c_raw, self.layer_boundaries, self.eps
+                )
+
+                mask = np.sum(x_raw, axis=1) >= 0
+                mask &= extra_dims[:, 0] < self.u0up_cut
+                mask &= extra_dims[:, 0] >= self.u0low_cut
+                mask &= ((x_raw < self.dep_cut).prod(-1) != 0)
+
+                all_valid.append(idx[mask])
+                pbar.update(len(idx))
+
+            pbar.close()
+            valid = np.concatenate(all_valid)
+            np.save(cache_path, valid)
+            return valid
+        finally:
+            source.close()
 
     # ------------------------------------------------------------------
     #  Lightning DataModule interface
@@ -368,7 +379,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
             self._val_dataset = _CaloINNDataset(
                 indices=train_valid[n_train:],
                 width_noise=self.width_noise,  # legacy val also gets noise
-                fixed_noise=self.fixed_noise,
+                fixed_noise=False,              # val never uses fixed noise
                 **{k: v for k, v in ds_kwargs.items()
                    if k not in ("width_noise", "fixed_noise")},
             )
@@ -419,6 +430,13 @@ class ShardedCaloINNDataModule(LightningDataModule):
 
     def predict_dataloader(self):
         return self.test_dataloader()
+
+    def teardown(self, stage=None):
+        """Clean up HDF5 handles opened by this DataModule."""
+        for attr in ("_train_dataset", "_val_dataset", "_test_dataset"):
+            ds = getattr(self, attr, None)
+            if ds is not None and ds.source is not None:
+                ds.source.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════

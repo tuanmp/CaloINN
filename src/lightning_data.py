@@ -90,7 +90,7 @@ class CaloINNDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         if self.use_sharded:
             self._setup_sharded(stage)
-        elif self.use_streaming or self.use_sharded:
+        elif self.use_streaming:
             self._setup_streaming(stage)
         else:
             self._setup_tensor(stage)
