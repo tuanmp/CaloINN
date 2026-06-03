@@ -9,12 +9,13 @@ import data_util
 class CaloINNDataModule(pl.LightningDataModule):
     """Lightning data module mirroring the legacy preprocessing/split logic.
 
-    When use_streaming=True, delegates to LegacyStreamingDataModule under the
-    hood — the full dataset is *never* loaded into RAM.  This is the
-    recommended mode for large datasets (Phase 1 / 5).
+    Three backends, selected by flags:
+      use_streaming=True  → LegacyStreamingDataModule (IterableDataset)
+      use_sharded=True    → ShardedCaloINNDataModule (map-style, multi-worker)
+      neither             → legacy TensorDataset (in-memory, small tests)
 
-    When use_streaming=False (default), uses the legacy TensorDataset approach
-    for backward compatibility with small in-memory tests.
+    use_sharded is the recommended mode for production — it supports
+    DataLoader multi-worker parallelism with proper HDF5 pickling.
     """
 
     def __init__(
@@ -31,6 +32,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         predict_batch_size=1000,
         dataset_kwargs={},
         use_streaming: bool = False,
+        use_sharded: bool = False,
     ):
         super().__init__()
         self.batch_size = batch_size
@@ -45,11 +47,12 @@ class CaloINNDataModule(pl.LightningDataModule):
         self.num_workers = num_workers
         self.dataset_kwargs = dataset_kwargs
         self.use_streaming = use_streaming
+        self.use_sharded = use_sharded
 
         self._train_dataset = None
         self._val_dataset = None
         self._test_dataset = None
-        self._streaming_dm = None  # delegate for streaming mode
+        self._streaming_dm = None  # delegate for streaming/sharded mode
         self.layer_boundaries = None
         self.num_train_samples = 0
 
@@ -85,10 +88,40 @@ class CaloINNDataModule(pl.LightningDataModule):
         return x, c, layer_boundaries
 
     def setup(self, stage=None):
-        if self.use_streaming:
+        if self.use_sharded:
+            self._setup_sharded(stage)
+        elif self.use_streaming or self.use_sharded:
             self._setup_streaming(stage)
         else:
             self._setup_tensor(stage)
+
+    def _setup_sharded(self, stage=None):
+        """Phase 8: delegate to ShardedCaloINNDataModule (map-style, multi-worker)."""
+        from sharded_data import ShardedCaloINNDataModule
+
+        kwargs = self.dataset_kwargs
+        self._streaming_dm = ShardedCaloINNDataModule(
+            data_path=self.data_path,
+            val_data_path=self.val_data_path,
+            batch_size=self.batch_size,
+            xml_path=kwargs.get("xml_path", ""),
+            xml_ptype=kwargs.get("xml_ptype", "pion"),
+            val_frac=self.val_frac,
+            eps=kwargs.get("eps", 1e-10),
+            u0up_cut=kwargs.get("u0up_cut", 7.0),
+            u0low_cut=kwargs.get("u0low_cut", 0.0),
+            rew=kwargs.get("pt_rew", 1.0),
+            dep_cut=kwargs.get("dep_cut", 1e10),
+            width_noise=kwargs.get("width_noise", 0.0),
+            fixed_noise=kwargs.get("fixed_noise", False),
+            shuffle=self.shuffle,
+            num_workers=self.num_workers,
+            predict_batch_size=self.predict_batch_size,
+            eval_dataset=self.eval_dataset,
+        )
+        self._streaming_dm.setup(stage)
+        self.num_train_samples = self._streaming_dm.num_train_samples
+        self.layer_boundaries = self._streaming_dm.layer_boundaries
 
     def _setup_streaming(self, stage=None):
         """Phase 5: delegate to LegayStreamingDataModule for memory efficiency."""
@@ -159,7 +192,7 @@ class CaloINNDataModule(pl.LightningDataModule):
             self._test_dataset = TensorDataset(x_tensor, c_tensor)
 
     def train_dataloader(self):
-        if self.use_streaming:
+        if self.use_streaming or self.use_sharded:
             return self._streaming_dm.train_dataloader()
         assert self._train_dataset is not None, (
             "Call setup('fit') before train_dataloader"
@@ -172,7 +205,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         )
 
     def val_dataloader(self):
-        if self.use_streaming:
+        if self.use_streaming or self.use_sharded:
             return self._streaming_dm.val_dataloader()
         assert self._val_dataset is not None, (
             "Call setup('fit') before val_dataloader"
@@ -185,7 +218,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         )
 
     def test_dataloader(self):
-        if self.use_streaming:
+        if self.use_streaming or self.use_sharded:
             return self._streaming_dm.test_dataloader()
         assert self._test_dataset is not None, (
             "Call setup('test'|'predict') before requesting test_dataloader"
@@ -198,7 +231,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         )
 
     def predict_dataloader(self):
-        if self.use_streaming:
+        if self.use_streaming or self.use_sharded:
             return self._streaming_dm.predict_dataloader()
         assert self._test_dataset is not None, (
             "Call setup('predict') before requesting predict_dataloader"
