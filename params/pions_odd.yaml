@@ -16,6 +16,12 @@ trainer:
   devices: 1
   max_epochs: 1000
   precision: 32
+  logger:
+    - class_path: training_utils.wandb.WandbLogger
+      init_args:
+        stage_dir: /pscratch/sd/p/pmtuan/caloinn
+        project: caloinn_lightning
+        group: full_train_odd
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
@@ -46,7 +52,7 @@ data:
   val_data_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_clf_train_coarse_hcal/all_showers_flatten.h5"
   batch_size: 2048
   val_frac: 0.01
-  shuffle: False
+  shuffle: True             # matches legacy default (params.get("shuffle", True))
   eval_dataset: "1-pions"
   num_workers: 0
   use_streaming: true
