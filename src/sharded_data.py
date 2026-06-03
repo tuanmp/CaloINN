@@ -218,9 +218,14 @@ class _CaloINNDataset(Dataset):
 # ═══════════════════════════════════════════════════════════════════════
 
 class _MemmapDataset(Dataset):
-    """Reads preprocessed data from memmap files — 20-40x faster than HDF5."""
+    """Reads preprocessed data from memmap files — 20-40x faster than HDF5.
 
-    def __init__(self, meta_path):
+    Cached data is clean (no noise).  Noise is re-applied at load time
+    using the same logic as _CaloINNDataset, so cached runs produce
+    identical noisy data as on-the-fly preprocessing.
+    """
+
+    def __init__(self, meta_path, width_noise=0.0, fixed_noise=False):
         import json
         with open(meta_path, "r") as f:
             meta = json.load(f)
@@ -232,20 +237,39 @@ class _MemmapDataset(Dataset):
                 shape=tuple(info["shape"]),
             )
         self._length = int(self._arrays["y"].shape[0])
+        self.width_noise = width_noise
+        self.fixed_noise = fixed_noise
 
     def __len__(self):
         return self._length
 
+    def _add_noise(self, x, indices):
+        """Apply noise matching legacy MyDataLoader, same as _CaloINNDataset."""
+        if self.width_noise <= 0:
+            return x
+        xn = x.numpy().astype(np.float32, copy=False)
+        idx = np.asarray(indices, dtype=np.int64)
+        if self.fixed_noise:
+            for i, ix in enumerate(idx):
+                rng = np.random.RandomState(int(ix))
+                xn[i] += rng.uniform(0, 1, xn.shape[1:]).astype(np.float32) * self.width_noise
+        else:
+            xn += np.random.uniform(0, 1, xn.shape).astype(np.float32) * self.width_noise
+        return torch.from_numpy(xn)
+
     def __getitem__(self, index):
-        return (
-            torch.from_numpy(np.asarray(self._arrays["x"][index])),
-            torch.from_numpy(np.asarray(self._arrays["c"][index])),
-        )
+        x = torch.from_numpy(np.asarray(self._arrays["x"][index]))
+        c = torch.from_numpy(np.asarray(self._arrays["c"][index]))
+        if self.width_noise > 0:
+            x = self._add_noise(x, [index])
+        return x, c
 
     def __getitems__(self, indices):
         idx = np.asarray(indices, dtype=np.int64)
         x = torch.from_numpy(np.asarray(self._arrays["x"][idx]))
         c = torch.from_numpy(np.asarray(self._arrays["c"][idx]))
+        if self.width_noise > 0:
+            x = self._add_noise(x, idx)
         return [(x[i], c[i]) for i in range(len(idx))]
 
 
@@ -466,8 +490,14 @@ class ShardedCaloINNDataModule(LightningDataModule):
 
         if stage in (None, "fit"):
             if self.cache_mode == "memmap" and self._cache_exists("train"):
-                self._train_dataset = _MemmapDataset(self._cache_path("train"))
-                self._val_dataset = _MemmapDataset(self._cache_path("val"))
+                self._train_dataset = _MemmapDataset(
+                    self._cache_path("train"),
+                    width_noise=self.width_noise, fixed_noise=self.fixed_noise,
+                )
+                self._val_dataset = _MemmapDataset(
+                    self._cache_path("val"),
+                    width_noise=self.width_noise, fixed_noise=False,
+                )
             else:
                 source = _RawHDF5Source(self.data_path)
                 ds_kwargs = dict(
