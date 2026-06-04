@@ -1,4 +1,5 @@
 import lightning as pl
+from lightning_fabric.utilities import rank_zero_info
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
@@ -97,6 +98,8 @@ class CaloINNDataModule(pl.LightningDataModule):
 
     def _setup_sharded(self, stage=None):
         """Phase 8: delegate to ShardedCaloINNDataModule (map-style, multi-worker)."""
+        rank_zero_info("Setting up sharded data module (map-style, multi-worker)")
+        rank_zero_info(f"Using cache mode: {self.dataset_kwargs.get('cache_mode', 'none')}")
         from sharded_data import ShardedCaloINNDataModule
 
         kwargs = self.dataset_kwargs
@@ -118,6 +121,9 @@ class CaloINNDataModule(pl.LightningDataModule):
             num_workers=self.num_workers,
             predict_batch_size=self.predict_batch_size,
             eval_dataset=self.eval_dataset,
+            cache_mode=kwargs.get("cache_mode", "none"),
+            cache_dir=kwargs.get("cache_dir", None),
+            cache_chunk=kwargs.get("cache_chunk", 512),
         )
         self._streaming_dm.setup(stage)
         self.num_train_samples = self._streaming_dm.num_train_samples
@@ -125,6 +131,7 @@ class CaloINNDataModule(pl.LightningDataModule):
 
     def _setup_streaming(self, stage=None):
         """Phase 5: delegate to LegayStreamingDataModule for memory efficiency."""
+        rank_zero_info("Setting up streaming data module (legacy, single-worker, no sharding)")
         from streaming_data import LegacyStreamingDataModule
 
         kwargs = self.dataset_kwargs

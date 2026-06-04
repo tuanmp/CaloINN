@@ -236,7 +236,7 @@ class _MemmapDataset(Dataset):
                 fp, mode="r", dtype=info["dtype"],
                 shape=tuple(info["shape"]),
             )
-        self._length = int(self._arrays["y"].shape[0])
+        self._length = int(self._arrays["x"].shape[0])
         self.width_noise = width_noise
         self.fixed_noise = fixed_noise
 
@@ -262,7 +262,7 @@ class _MemmapDataset(Dataset):
         c = torch.from_numpy(np.asarray(self._arrays["c"][index]))
         if self.width_noise > 0:
             x = self._add_noise(x, [index])
-        return x, c
+        return x.to(dtype), c.to(dtype)
 
     def __getitems__(self, indices):
         idx = np.asarray(indices, dtype=np.int64)
@@ -270,7 +270,7 @@ class _MemmapDataset(Dataset):
         c = torch.from_numpy(np.asarray(self._arrays["c"][idx]))
         if self.width_noise > 0:
             x = self._add_noise(x, idx)
-        return [(x[i], c[i]) for i in range(len(idx))]
+        return [(x[i].to(dtype), c[i].to(dtype)) for i in range(len(idx))]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -309,6 +309,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
         eval_dataset: str = "1-pions",
         cache_mode: str = "none",
         cache_dir: str = "",
+        cache_chunk: int = 1024,
         **kwargs,
     ):
         super().__init__()
@@ -332,6 +333,8 @@ class ShardedCaloINNDataModule(LightningDataModule):
         self.eval_dataset = eval_dataset
         self.cache_mode = cache_mode
         self.cache_dir = cache_dir or "/tmp/caloinn_cache"
+        self.cache_chunk = cache_chunk
+
 
         # Load layer boundaries once (shared across splits)
         from caloch_eval.XMLHandler import XMLHandler
@@ -442,7 +445,6 @@ class ShardedCaloINNDataModule(LightningDataModule):
             "fields": {
                 "x": {"file": f"{split}_x.dat", "shape": [n, x_dim], "dtype": "float32"},
                 "c": {"file": f"{split}_c.dat", "shape": [n, c_dim], "dtype": "float32"},
-                "y": {"file": f"{split}_y.dat", "shape": [n], "dtype": "float32"},
             }
         }
         # y is unused dummy — kept for _MemmapDataset compatibility
@@ -450,22 +452,19 @@ class ShardedCaloINNDataModule(LightningDataModule):
                           mode="w+", dtype="float32", shape=(n, x_dim))
         c_arr = np.memmap(os.path.join(dat_dir, f"{split}_c.dat"),
                           mode="w+", dtype="float32", shape=(n, c_dim))
-        y_arr = np.memmap(os.path.join(dat_dir, f"{split}_y.dat"),
-                          mode="w+", dtype="float32", shape=(n,))
 
-        loader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=0)
+        loader = DataLoader(dataset, batch_size=self.cache_chunk, shuffle=False, num_workers=0)
         pbar = tqdm.tqdm(total=n, desc=f"memmap cache '{split}'", unit="samples")
         offset = 0
         for xb, cb in loader:
             m = len(xb)
             x_arr[offset:offset+m] = xb.numpy()
             c_arr[offset:offset+m] = cb.numpy()
-            y_arr[offset:offset+m] = 0.0
             offset += m
             pbar.update(m)
         pbar.close()
 
-        x_arr.flush(); c_arr.flush(); y_arr.flush()
+        x_arr.flush(); c_arr.flush()
         import json
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)

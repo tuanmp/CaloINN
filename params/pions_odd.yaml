@@ -49,24 +49,29 @@ trainer:
 
 # ── Data (mirrors legacy exactly, plus use_sharded / num_workers) ──
 data:
-  data_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_coarse_hcal/trainset_flat_good_order.hdf5"
-  val_data_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_clf_train_coarse_hcal/all_showers_flatten.h5"
-  batch_size: 2048
-  val_frac: 0.01
-  shuffle: True             # matches legacy default (params.get("shuffle", True))
-  eval_dataset: "1-pions"
-  num_workers: 4
-  use_sharded: true
-  dataset_kwargs:
-    xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml
-    xml_ptype: "pion"
-    single_energy: null
-    eps: 1.0e-10
-    u0up_cut: 3.5
-    u0low_cut: 0.0
-    pt_rew: 1.0
-    dep_cut: 600
-    width_noise: 5.0e-6
+  class_path: src.lightning_data.CaloINNDataModule
+  init_args:
+    data_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_coarse_hcal/trainset_flat_good_order.hdf5"
+    val_data_path: "/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_clf_train_coarse_hcal/all_showers_flatten.h5"
+    batch_size: 2048
+    val_frac: 0.01
+    shuffle: True             # matches legacy default (params.get("shuffle", True))
+    eval_dataset: "1-pions"
+    num_workers: 4
+    use_sharded: true
+    dataset_kwargs:
+      xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml
+      xml_ptype: "pion"
+      single_energy: null
+      eps: 1.0e-10
+      u0up_cut: 3.5
+      u0low_cut: 0.0
+      pt_rew: 1.0
+      dep_cut: 600
+      width_noise: 5.0e-6
+      cache_mode: memmap
+      cache_dir: /pscratch/sd/p/pmtuan/caloinn_cache
+      cache_chunk: 100000
 
 # ── Model (mirrors legacy architecture and hyperparameters) ──
 model:

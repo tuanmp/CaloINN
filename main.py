@@ -37,7 +37,7 @@ class CaloINNLightningCLI(LightningCLI):
 def main():
     CaloINNLightningCLI(
         model_class=CaloINNLightningModule,
-        datamodule_class=CaloINNDataModule,
+        # datamodule_class=CaloINNDataModule,
         trainer_class=Trainer,
         auto_configure_optimizers=False,
         trainer_defaults={"num_sanity_val_steps": 0},
