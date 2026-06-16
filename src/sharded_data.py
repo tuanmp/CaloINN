@@ -564,7 +564,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
             self._test_dataset,
             batch_size=self.predict_batch_size,
             shuffle=False,
-            num_workers=0,
+            num_workers=self.num_workers,
         )
 
     def predict_dataloader(self):

@@ -34,6 +34,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         dataset_kwargs={},
         use_streaming: bool = False,
         use_sharded: bool = False,
+        predict_multiplier: int = 1,
     ):
         super().__init__()
         self.batch_size = batch_size
@@ -56,6 +57,10 @@ class CaloINNDataModule(pl.LightningDataModule):
         self._streaming_dm = None  # delegate for streaming/sharded mode
         self.layer_boundaries = None
         self.num_train_samples = 0
+
+        assert predict_multiplier >= 1, "predict_multiplier must be >= 1"
+        self.predict_multiplier = predict_multiplier
+
 
     def _legacy_kwargs(self):
         return {
@@ -239,13 +244,13 @@ class CaloINNDataModule(pl.LightningDataModule):
 
     def predict_dataloader(self):
         if self.use_streaming or self.use_sharded:
-            return self._streaming_dm.predict_dataloader()
+            return [self._streaming_dm.predict_dataloader() for _ in range(self.predict_multiplier)]
         assert self._test_dataset is not None, (
             "Call setup('predict') before requesting predict_dataloader"
         )
-        return DataLoader(
+        return [DataLoader(
             self._test_dataset,
             batch_size=self.predict_batch_size,
             shuffle=False,
             num_workers=0,
-        )
+        ) for _ in range(self.predict_multiplier)]

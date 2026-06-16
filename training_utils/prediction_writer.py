@@ -17,6 +17,7 @@ class BaseWriter(L.pytorch.callbacks.BasePredictionWriter):
         self.save_dir = "./predictions"
         self.predict_output_file = predict_output_file
         self.batch_dir = os.path.join(self.save_dir, "batches")
+        self.all_dls = set()
 
     def setup(self, trainer: L.Trainer, pl_module: L.LightningModule, stage: str):
 
@@ -46,6 +47,8 @@ class BaseWriter(L.pytorch.callbacks.BasePredictionWriter):
         save_path = os.path.join(self.batch_dir, f"dl_{dataloader_idx}_batch_{batch_idx}.npz")
 
         np.savez(save_path, incident_energies=incident_energies, showers=showers)
+
+        self.all_dls.add(dataloader_idx)
 
 
 class PredictionWriter(BaseWriter):
@@ -77,27 +80,34 @@ class PredictionWriter(BaseWriter):
             batch_dir = self.batch_dir
             batch_files = sorted(os.listdir(batch_dir))
 
-            num_predictions = 0
-            with h5py.File(os.path.join(self.save_dir, self.predict_output_file), "w") as f:
+            for dataloader_idx in self.all_dls:
 
-                for batch_file in batch_files:
-                    batch_path = os.path.join(batch_dir, batch_file)
-                    data = np.load(batch_path, allow_pickle=True)
+                num_predictions = 0
 
-                    incident_energies = data["incident_energies"]
-                    showers = data["showers"]
+                h5_file = os.path.join(self.save_dir, self.predict_output_file)
+                h5_file = h5_file.replace(".hdf5", f"_dl{dataloader_idx}.hdf5")
+                with h5py.File(h5_file, "w") as f:
 
-                    if num_predictions == 0:
-                        f.create_dataset("incident_energies", data=incident_energies, maxshape=(None,1), chunks=True)
-                        f.create_dataset("showers", data=showers, maxshape=(None, *showers.shape[1:]), chunks=True)
-                    else:
-                        f["incident_energies"].resize(num_predictions + incident_energies.shape[0], axis=0)
-                        f["incident_energies"][-incident_energies.shape[0]:] = incident_energies
+                    for batch_file in batch_files:
+                        if not batch_file.startswith(f"dl_{dataloader_idx}_"):
+                            continue
+                        batch_path = os.path.join(batch_dir, batch_file)
+                        data = np.load(batch_path, allow_pickle=True)
 
-                        f["showers"].resize(num_predictions + showers.shape[0], axis=0)
-                        f["showers"][-showers.shape[0]:] = showers
+                        incident_energies = data["incident_energies"]
+                        showers = data["showers"]
 
-                    num_predictions += incident_energies.shape[0]
+                        if num_predictions == 0:
+                            f.create_dataset("incident_energies", data=incident_energies, maxshape=(None,1), chunks=True)
+                            f.create_dataset("showers", data=showers, maxshape=(None, *showers.shape[1:]), chunks=True)
+                        else:
+                            f["incident_energies"].resize(num_predictions + incident_energies.shape[0], axis=0)
+                            f["incident_energies"][-incident_energies.shape[0]:] = incident_energies
+
+                            f["showers"].resize(num_predictions + showers.shape[0], axis=0)
+                            f["showers"][-showers.shape[0]:] = showers
+
+                        num_predictions += incident_energies.shape[0]
         
-        rank_zero_info(f"Saved {num_predictions} showers to {os.path.join(self.save_dir, self.predict_output_file)}")
+                rank_zero_info(f"Saved {num_predictions} showers to {h5_file}")
         rank_zero_info(f"Average inference time per sample: {np.mean(self.inference_time):.6f} seconds")

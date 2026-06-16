@@ -1,26 +1,14 @@
-import math
+import os
 import time
-from random import randrange
-from typing import Any
 
 import lightning as pl
 import numpy as np
 import torch
-import torch.distributions as dist
 from lightning_fabric.utilities import rank_zero_info
 
-import caloch_eval.evaluate as evaluate
 import data_util
 from model import CINN
 from training_diagnostics import TrainingDiagnostics
-
-
-class LogUniform(dist.TransformedDistribution):
-    def __init__(self, lb, ub):
-        super(LogUniform, self).__init__(
-            dist.Uniform(torch.log(lb), torch.log(ub)),
-            dist.ExpTransform(),
-        )
 
 
 class _SkipLastTwoScheduler:
@@ -452,6 +440,8 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def on_predict_start(self):
         rank_zero_info("Starting prediction...")
+        # seed with current time for variability across runs; legacy code does not set a seed at all before generation.
+        torch.manual_seed(int(time.time()))
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         # Generate once per predict run; Lightning still requires a predict dataloader.
@@ -475,7 +465,7 @@ class CaloINNLightningModule(pl.LightningModule):
 
         shower = np.concatenate(layers, axis=1) * 1.e3
 
-        return incident_energies, shower, t / c.shape[0]
+        return incident_energies.astype(np.float32), shower.astype(np.float32), t / c.shape[0]
 
 
     @torch.inference_mode()
@@ -493,68 +483,223 @@ class CaloINNLightningModule(pl.LightningModule):
 
         if measure_gen_time:
             return samples, t_diff
-        return samples      
+        return samples
 
-    # def generate(self, num_samples, incident_energies: torch.Tensor=None, batch_size=1000, output_file=None):
-    #     self.model.eval()
-    #     device = self.device
+    # ------------------------------------------------------------------
+    #  Standalone generation / encoding / decoding methods
+    # ------------------------------------------------------------------
 
-    #     with torch.no_grad():
-    #         if self.hparams["dataset_params"].get("eval_dataset") == "2":
-    #             logunif = LogUniform(torch.tensor(1e3), torch.tensor(1e6))
-    #             energies = logunif.sample((num_samples, 1)) / 1e3
-    #         elif incident_energies is not None:
-    #             energies = incident_energies.to(device)
-    #         else:
-    #             energies = (
-    #                 torch.tensor(
-    #                     data_util.generate_Einc_ds1(
-    #                         energy=self.single_energy,
-    #                         sample_multiplier=1000,
-    #                     ),
-    #                     dtype=torch.float,
-    #                 )
-    #                 / 1e3
-    #             ).reshape(-1, 1)
+    @torch.inference_mode()
+    def generate_single_energy(self, energy, num_samples, batch_size=1000, output_file=None):
+        """Generate samples at a single incident energy (ds1-style).
 
-    #         samples = torch.zeros((energies.shape[0], 1, self.num_dim), device=device)
-    #         num_samples = energies.shape[0]
-    #         times = []
+        Parameters
+        ----------
+        energy : float
+            log2 energy value (e.g., 16 → 2^16 MeV ≈ 65.5 GeV).
+        num_samples : int
+            Number of samples to generate.
+        batch_size : int
+            Generation batch size (controls peak GPU memory).
+        output_file : str, optional
+            If given, save generated showers to this HDF5 path.
 
-    #         for batch in range((num_samples + batch_size - 1) // batch_size):
-    #             start = batch_size * batch
-    #             stop = min(batch_size * (batch + 1), num_samples)
-    #             energies_l = energies[start:stop].to(device)
-    #             t1 = time.time()
-    #             samples[start:stop] = self.model.sample(1, energies_l)
-    #             t_diff = time.time() - t1
-    #             times.append(t_diff / (stop - start))
+        Returns
+        -------
+        dict
+            Postprocessed data with ``"energy"`` and ``"layer_*"`` keys.
+        """
+        self.model.eval()
+        device = self.device
 
-    #         self.avg_gen_time[str(batch_size)] = np.array(times).mean()
-    #         samples = samples[:, 0, ...].cpu().numpy()
-    #         energies = energies.cpu().numpy()
+        energies = torch.full((num_samples, 1), 2 ** energy / 1e3, device=device)
 
-    #     samples -= self.width_noise
-    #     shower = data_util.postprocess(
-    #         samples,
-    #         energies,
-    #         layer_boundaries=self.layer_boundaries,
-    #         threshold=self.width_noise,
-    #         quantiles=self.q.detach().cpu().numpy(),
-    #     )
+        samples = torch.zeros((num_samples, 1, self.num_dim), device=device)
+        for batch in range((num_samples + batch_size - 1) // batch_size):
+            start = batch_size * batch
+            stop = min(batch_size * (batch + 1), num_samples)
+            samples[start:stop] = self.model.sample(1, energies[start:stop])
 
-    #     if output_file is not None:
-    #         save_payload = {key: np.copy(value) for key, value in shower.items()}
-    #         data_util.save_data(save_payload, filename=output_file)
+        samples = samples[:, 0, ...].cpu().numpy()
+        energies_np = energies.cpu().numpy()
+        samples -= self.width_noise
 
-    #     return shower
+        data = data_util.postprocess(
+            samples, energies_np,
+            layer_boundaries=self.layer_boundaries,
+            threshold=self.width_noise,
+            quantiles=self.q.detach().cpu().numpy(),
+        )
 
-    # def plot_default_from_caloch(self, base_dir, sample_name="samples.hdf5", eval_name="final", cut=1.515e-3):
-    #     evaluate.main(
-    #         (
-    #             f"-i {base_dir}/{sample_name} "
-    #             f"-r {self.params['val_data_path']} "
-    #             f"-m all -d {self.params['eval_dataset']} "
-    #             f"--output_dir {base_dir}/eval/{eval_name}/ --cut {cut}"
-    #         ).split()
-    #     )
+        if output_file is not None:
+            data_util.save_data(data, filename=output_file)
+
+        return data
+
+    @torch.inference_mode()
+    def generate_latent(self, val_data_path, output_file=None, num_samples=None,
+                        batch_size=1000):
+        """Encode validation showers into latent-space features and save.
+
+        Creates a MyDataLoader from *val_data_path* (all events, no split),
+        encodes each batch through the model, and saves
+        ``latent_features`` + ``incident_energies`` (MeV) to HDF5.
+
+        Parameters
+        ----------
+        val_data_path : str
+            Path to validation HDF5 file.
+        output_file : str, optional
+            Path for the output HDF5 file (default: ``latent_features.hdf5``
+            in the trainer's default root dir).
+        num_samples : int, optional
+            Cap on number of events to encode.
+        batch_size : int
+            Encoding batch size.
+
+        Returns
+        -------
+        latent_features : np.ndarray  shape (N, latent_dim)
+        incident_energies : np.ndarray  shape (N, 1), in MeV
+        """
+        import h5py
+
+        self.model.eval()
+        device = self.device
+
+        hp = self.hparams
+        dk = hp.dataset_params
+
+        latent_loader, _, _ = data_util.get_loaders(
+            val_data_path,
+            hp.xml_path,
+            hp.xml_ptype,
+            0.0,                     # val_frac=0 → use all data
+            batch_size,
+            dk.get("eps", 1.0e-10),
+            device,
+            width_noise=self.width_noise,
+            energy=dk.get("single_energy", None),
+            u0up_cut=dk.get("u0up_cut", 7.0),
+            u0low_cut=dk.get("u0low_cut", 0.0),
+            rew=dk.get("pt_rew", 1.0),
+            dep_cut=dk.get("dep_cut", 1e10),
+        )
+
+        latent_chunks = []
+        energy_chunks = []
+        encoded = 0
+
+        for x_batch, c_batch in latent_loader:
+            if num_samples is not None and encoded >= num_samples:
+                break
+            x_batch = x_batch.to(device)
+            c_batch = c_batch.to(device)
+            z_batch = self.model(x_batch, c_batch)[0]
+            latent_chunks.append(z_batch.cpu().numpy())
+            energy_chunks.append(c_batch.cpu().numpy() * 1e3)  # GeV → MeV
+            encoded += len(c_batch)
+
+        if not latent_chunks:
+            raise ValueError("No events were encoded into latent features.")
+
+        latent_features = np.concatenate(latent_chunks, axis=0)
+        incident_energies = np.concatenate(energy_chunks, axis=0)
+
+        if output_file is None:
+            if hasattr(self, "trainer") and self.trainer is not None:
+                output_file = os.path.join(
+                    self.trainer.default_root_dir, "latent_features.hdf5"
+                )
+            else:
+                output_file = "latent_features.hdf5"
+
+        with h5py.File(output_file, "w") as f:
+            f.create_dataset("incident_energies", data=incident_energies)
+            f.create_dataset("latent_features", data=latent_features)
+
+        return latent_features, incident_energies
+
+    @torch.inference_mode()
+    def generate_from_latent(self, latent_input_path, output_file=None,
+                             num_samples=None, batch_size=1000):
+        """Decode latent features back to showers.
+
+        Reads an HDF5 file containing ``latent_features`` and
+        ``incident_energies`` (MeV), decodes them through the model in
+        reverse, postprocesses, and optionally saves the generated
+        showers.
+
+        Parameters
+        ----------
+        latent_input_path : str
+            HDF5 file with ``latent_features`` and ``incident_energies``.
+        output_file : str, optional
+            Path for the generated showers HDF5.
+        num_samples : int, optional
+            Cap on number of events to decode.
+        batch_size : int
+            Decoding batch size.
+
+        Returns
+        -------
+        dict
+            Postprocessed data with ``"energy"`` and ``"layer_*"`` keys.
+        """
+        import h5py
+
+        self.model.eval()
+        device = self.device
+
+        with h5py.File(latent_input_path, "r") as f:
+            if "latent_features" not in f or "incident_energies" not in f:
+                raise ValueError(
+                    "Input file must contain 'latent_features' and "
+                    "'incident_energies' datasets."
+                )
+            latent_np = f["latent_features"][:]
+            energies_np = f["incident_energies"][:]
+
+        if latent_np.ndim != 2 or latent_np.shape[1] != self.num_dim:
+            raise ValueError(
+                f"Expected latent dim {self.num_dim}, got {latent_np.shape}"
+            )
+
+        if num_samples is not None and num_samples < len(latent_np):
+            idx = np.random.choice(
+                len(latent_np), size=num_samples, replace=False
+            )
+            latent_np = latent_np[idx]
+            energies_np = energies_np[idx]
+
+        energies_np = energies_np / 1e3  # MeV → GeV
+
+        dtype = torch.get_default_dtype()
+        latent = torch.tensor(latent_np, dtype=dtype)
+        energies = torch.tensor(energies_np, dtype=dtype)
+        n_total = latent.shape[0]
+
+        samples = torch.zeros((n_total, 1, self.num_dim), dtype=dtype)
+        for batch in range((n_total + batch_size - 1) // batch_size):
+            start = batch_size * batch
+            stop = min(batch_size * (batch + 1), n_total)
+            z_l = latent[start:stop].to(device)
+            c_l = energies[start:stop].to(device)
+            decoded, _ = self.model(z_l, c_l, rev=True)
+            samples[start:stop, 0] = decoded.cpu()
+
+        samples = samples[:, 0, ...].cpu().numpy()
+        energies_np = energies.cpu().numpy()
+        samples -= self.width_noise
+
+        data = data_util.postprocess(
+            samples, energies_np,
+            layer_boundaries=self.layer_boundaries,
+            threshold=self.width_noise,
+            quantiles=self.q.detach().cpu().numpy(),
+        )
+
+        if output_file is not None:
+            data_util.save_data(data, filename=output_file)
+
+        return data

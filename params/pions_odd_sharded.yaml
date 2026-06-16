@@ -8,7 +8,7 @@
 #   - num_workers: 4 — sharded supports multi-worker via pickle-safe handles
 #   - Run with: uv run python main.py fit --config params/pions_odd.yaml
 
-seed_everything: 2026
+# seed_everything: 2026
 
 trainer:
   stage_dir: /pscratch/sd/p/pmtuan/caloinn
@@ -31,11 +31,7 @@ trainer:
         save_top_k: 3
         filename: "{epoch}-{val_loss:.2f}"
         save_last: true
-    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
-      init_args:
-        every_n_epochs: 50          # matches legacy save_interval: 50
-        save_top_k: -1              # keep all periodic checkpoints
-        filename: "epoch{epoch:04d}"
+        verbose: true
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: epoch
@@ -46,6 +42,9 @@ trainer:
         deterministic_seed: 2026
         disable_batchnorm_updates: true
         calibration_source: module_cache
+    - class_path: training_utils.prediction_writer.PredictionWriter
+      init_args:
+        predict_output_file: lightning-sample.hdf5
 
 # ── Data (mirrors legacy exactly, plus use_sharded / num_workers) ──
 data:
@@ -59,6 +58,8 @@ data:
     eval_dataset: "1-pions"
     num_workers: 4
     use_sharded: true
+    predict_multiplier: 2
+    predict_batch_size: 50000
     dataset_kwargs:
       xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml
       xml_ptype: "pion"
