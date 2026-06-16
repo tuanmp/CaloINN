@@ -26,12 +26,7 @@ from training_utils.trainer import Trainer
 
 
 class CaloINNLightningCLI(LightningCLI):
-    """LightningCLI with legacy argument linking for train/val split parity."""
-
-    def add_arguments_to_parser(self, parser):
-        parser.link_arguments("data.val_frac", "model.train_val_frac")
-        parser.link_arguments("data.batch_size", "model.train_batch_size")
-        parser.link_arguments("data.shuffle", "model.train_shuffle")
+    """LightningCLI entrypoint for CaloINN training and prediction."""
 
 
 def main():

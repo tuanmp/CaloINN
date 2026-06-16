@@ -81,10 +81,8 @@ Tests require the dataset at the path specified in `params/pions.yaml` (`data_pa
 
 5. **`num_train_samples`** is critical for Bayesian models (KL loss scaling). It's set from the actual dataset size during init, not hardcoded to 1.
 
-6. **`init_from_legacy_train_split`**: When `true`, model init loads data via `get_loaders()` (train split). When `false`, loads all data. Use `false` when DataModule provides its own split.
+6. **FrEIA**: The `frEIA==0.2` package from PyPI (not a custom install). Provides the invertible network framework.
 
-7. **FrEIA**: The `frEIA==0.2` package from PyPI (not a custom install). Provides the invertible network framework.
+7. **Config is LightningCLI-based**: Params use YAML with `class_path`/`init_args` structure. See `params/pions_odd.yaml` as the canonical example.
 
-8. **Config is LightningCLI-based**: Params use YAML with `class_path`/`init_args` structure. See `params/pions_odd.yaml` as the canonical example.
-
-9. **Slurm-aware default root dir**: The custom `Trainer` class (in `training_utils/trainer.py`) auto-detects SLURM and uses `$SLURM_JOB_ID` as the run directory name.
+8. **Slurm-aware default root dir**: The custom `Trainer` class (in `training_utils/trainer.py`) auto-detects SLURM and uses `$SLURM_JOB_ID` as the run directory name.

@@ -1,12 +1,6 @@
 # CaloINN Lightning training config — odd-pion discrete coarse-HCAL dataset.
-# Harmonized with CaloINN/params/pions_odd_discrete.yaml (all matching values).
 #
-# Key differences from legacy:
-#   - max_samples: not needed — streaming handles any dataset size
-#   - seed_everything: 2026 — legacy had no seed (non-deterministic)
-#   - num_workers: 0 — required for streaming (HDF5 not fork-safe)
-#   - num_workers: 4 — sharded supports multi-worker via pickle-safe handles
-#   - Run with: uv run python main.py fit --config params/pions_odd.yaml
+# Run with: uv run python main.py fit --config params/pions_odd.yaml
 
 seed_everything: 2026
 
@@ -15,7 +9,7 @@ trainer:
   run_name: full_training_odd_lightning
   accelerator: auto
   devices: 1
-  max_epochs: 1000
+  max_epochs: 500
   precision: 32
   logger:
     - class_path: training_utils.wandb.WandbLogger
@@ -60,7 +54,7 @@ data:
     num_workers: 4
     use_sharded: true
     dataset_kwargs:
-      xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml
+      xml_path: binning_pion_odd_coarse_hcal.xml
       xml_ptype: "pion"
       single_energy: null
       eps: 1.0e-10
@@ -80,10 +74,9 @@ model:
   max_samples: 10000           # matches legacy: 1M random samples for init
   width_noise: 5.0e-6           # matches legacy
   custom_noise: False
-  xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml
+  xml_path: binning_pion_odd_coarse_hcal.xml
   xml_ptype: "pion"
   enable_diagnostics: false
-  init_from_legacy_train_split: false
   dataset_params:
     xml_ptype: "pion"
     single_energy: null
@@ -101,7 +94,7 @@ model:
   scheduler_params:
     lr_scheduler: one_cycle_lr  # matches legacy
     max_lr: 0.0001              # matches legacy max_lr: 1.e-4
-    epochs: 800                 # matches legacy cycle_epochs: 800
+    epochs: 500                 # matches legacy cycle_epochs: 800
     steps_per_epoch: 1144       # 2,344,086 train / 2048 batch (full dataset)
   cinn_params:
     bayesian: False

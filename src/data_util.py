@@ -4,7 +4,6 @@ import torch
 
 import caloch_eval.HighLevelFeatures as HLF
 from caloch_eval.XMLHandler import XMLHandler
-from myDataLoader import MyDataLoader
 
 
 def load_data_calo(filename, layer_boundaries, energy=None):
@@ -428,51 +427,6 @@ def save_hlf(hlf, filename):
     with open(filename, 'wb') as file:
         pickle.dump(hlf, file)
     print("Saving file with high-level features DONE.")
-
-def get_loaders(filename, xml_filename, particle_type, val_frac, batch_size, 
-                eps=1.e-10, device='cpu', drop_last=False, shuffle=True, 
-                width_noise=0.0, energy=None, u0up_cut=7.0, u0low_cut=0.0, rew=1.0, dep_cut=0.0):
-    """Creates the dataloaders used to train the VAE model."""
-    
-    # load the data from the hdf5 file
-    data, layer_boundaries = load_data(filename, particle_type, xml_filename=xml_filename, energy=energy)
-    # preprocess the data and append the extra dims
-    x, c = preprocess(data, layer_boundaries, eps, u0up_cut=u0up_cut, u0low_cut=u0low_cut, rew=rew, dep_cut=dep_cut)
-
-    # Create an index array, used for splitting into train and val set
-    number_of_samples = len(x)
-    if shuffle:
-        full_index = np.random.choice(number_of_samples, number_of_samples, replace=False)
-    else:
-        full_index = np.arange(number_of_samples)
-
-    # Split the data
-    number_of_val_samples = int(number_of_samples * val_frac)
-    number_of_trn_samples = number_of_samples - number_of_val_samples
-
-    trn_index = full_index[:number_of_trn_samples]
-    val_index = full_index[number_of_trn_samples:]
-    
-    x_trn = x[trn_index]
-    c_trn = c[trn_index]
-
-    x_val = x[val_index]
-    c_val = c[val_index]  
-    
-    # Cast into torch tensors
-    x_trn = torch.tensor(x_trn, device=device, dtype=torch.get_default_dtype())
-    c_trn = torch.tensor(c_trn, device=device, dtype=torch.get_default_dtype())
-    x_val = torch.tensor(x_val, device=device, dtype=torch.get_default_dtype())
-    c_val = torch.tensor(c_val, device=device, dtype=torch.get_default_dtype())
-
-    # Call the postprocess func to make sure that it runs through
-    #_ = postprocess(x_trn, c_trn, layer_boundaries)
-    #_ = postprocess(x_val, c_val, layer_boundaries)
-    
-    # Create the dataloaders
-    trn_loader = MyDataLoader(x_trn, c_trn, batch_size, drop_last, shuffle, width_noise)
-    val_loader = MyDataLoader(x_val, c_val, batch_size, drop_last, shuffle, width_noise)
-    return trn_loader, val_loader, layer_boundaries
 
 def get_hlf(shower, particle_type, layer_boundaries, threshold=1.e-4):
     "returns a hlf class needed for plotting"

@@ -22,11 +22,8 @@ import torch
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SRC_DIR = os.path.join(REPO_ROOT, "src")
-CALOINN_DIR = os.path.join(REPO_ROOT, "CaloINN")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
-if CALOINN_DIR not in sys.path:
-    sys.path.insert(1, CALOINN_DIR)
 
 from streaming_data import LegacyStreamingDataModule
 
@@ -35,7 +32,7 @@ from streaming_data import LegacyStreamingDataModule
 TEST_CONFIG = {
     'data_path': '/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_coarse_hcal/trainset_flat_good_order.hdf5',
     'val_data_path': '/pscratch/sd/p/pmtuan/ddsim/single_pion_discrete_clf_train_coarse_hcal/all_showers_flatten.h5',
-    'xml_path': 'CaloINN/binning_odd_pion.xml',
+    'xml_path': os.path.join(REPO_ROOT, 'binning_pion_odd_coarse_hcal.xml'),
     'xml_ptype': 'pion',
     'val_frac': 0.01,
     'eps': 1e-10,

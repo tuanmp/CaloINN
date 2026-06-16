@@ -1,12 +1,6 @@
 # CaloINN Lightning training config — odd-pion discrete coarse-HCAL dataset.
-# Harmonized with CaloINN/params/pions_odd_discrete.yaml (all matching values).
 #
-# Key differences from legacy:
-#   - max_samples: not needed — streaming handles any dataset size
-#   - seed_everything: 2026 — legacy had no seed (non-deterministic)
-#   - num_workers: 0 — required for streaming (HDF5 not fork-safe)
-#   - num_workers: 4 — sharded supports multi-worker via pickle-safe handles
-#   - Run with: uv run python main.py fit --config params/pions_odd.yaml
+# Run with: uv run python main.py fit --config params/pions_odd_sharded.yaml
 
 # seed_everything: 2026
 
@@ -61,7 +55,7 @@ data:
     predict_multiplier: 2
     predict_batch_size: 50000
     dataset_kwargs:
-      xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml
+      xml_path: binning_pion_odd_coarse_hcal.xml
       xml_ptype: "pion"
       single_energy: null
       eps: 1.0e-10
@@ -81,10 +75,9 @@ model:
   max_samples: 10000           # matches legacy: 1M random samples for init
   width_noise: 5.0e-6           # matches legacy
   custom_noise: False
-  xml_path: /global/cfs/cdirs/m3443/usr/pmtuan/caloinn_lightning/CaloINN/binning_odd_pion.xml
+  xml_path: binning_pion_odd_coarse_hcal.xml
   xml_ptype: "pion"
   enable_diagnostics: false
-  init_from_legacy_train_split: false
   dataset_params:
     xml_ptype: "pion"
     single_energy: null

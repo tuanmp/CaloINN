@@ -61,10 +61,7 @@ class CaloINNLightningModule(pl.LightningModule):
         width_noise=1e-7,
         custom_noise=False,
         single_energy=None,
-        train_val_frac=0.01,
-        train_batch_size=512,
-        train_shuffle=False,
-        init_from_legacy_train_split=True,
+
         optimizer_params=None,
         scheduler_params=None,
         # Phase 2: accept preprocessed data arrays directly, bypassing file read
@@ -144,41 +141,21 @@ class CaloINNLightningModule(pl.LightningModule):
     def load_init_tensors(self):
 
         rank_zero_info(f"Loading sample data from {self.hparams['setup_data_sample_path']} to initialize model parameters...")
-        if self.hparams.get("init_from_legacy_train_split", True):
-            train_loader, _, layer_boundaries = data_util.get_loaders(
-                self.hparams["setup_data_sample_path"],
-                self.hparams["xml_path"],
-                self.hparams["xml_ptype"],
-                self.hparams.get("train_val_frac", 0.01),
-                self.hparams.get("train_batch_size", 512),
-                self.hparams["dataset_params"].get("eps", 1.0e-10),
-                device="cpu",
-                shuffle=bool(self.hparams.get("train_shuffle", False)),
-                width_noise=self.hparams.get("width_noise", 1e-7),
-                energy=self.hparams["dataset_params"].get("single_energy", None),
-                u0up_cut=self.hparams["dataset_params"].get("u0up_cut", 7.0),
-                u0low_cut=self.hparams["dataset_params"].get("u0low_cut", 0.0),
-                rew=self.hparams["dataset_params"].get("pt_rew", 1.0),
-                dep_cut=self.hparams["dataset_params"].get("dep_cut", 1.0e10),
-            )
-            x = train_loader.data.cpu().numpy()
-            c = train_loader.cond.cpu().numpy()
-        else:
-            sample_data, layer_boundaries = data_util.load_data(
-                self.hparams["setup_data_sample_path"],
-                self.hparams["xml_ptype"],
-                self.hparams["xml_path"],
-            )
+        sample_data, layer_boundaries = data_util.load_data(
+            self.hparams["setup_data_sample_path"],
+            self.hparams["xml_ptype"],
+            self.hparams["xml_path"],
+        )
 
-            x, c = data_util.preprocess(
-                sample_data,
-                layer_boundaries,
-                self.hparams["dataset_params"].get("eps", 1.0e-10),
-                u0up_cut=self.hparams["dataset_params"].get("u0up_cut", 7.0),
-                u0low_cut=self.hparams["dataset_params"].get("u0low_cut", 0.0),
-                rew=self.hparams["dataset_params"].get("pt_rew", 1.0),
-                dep_cut=self.hparams["dataset_params"].get("dep_cut", 1.0e10),
-            )
+        x, c = data_util.preprocess(
+            sample_data,
+            layer_boundaries,
+            self.hparams["dataset_params"].get("eps", 1.0e-10),
+            u0up_cut=self.hparams["dataset_params"].get("u0up_cut", 7.0),
+            u0low_cut=self.hparams["dataset_params"].get("u0low_cut", 0.0),
+            rew=self.hparams["dataset_params"].get("pt_rew", 1.0),
+            dep_cut=self.hparams["dataset_params"].get("dep_cut", 1.0e10),
+        )
 
         dtype = torch.get_default_dtype()
         x = torch.tensor(x, dtype=dtype)
@@ -563,6 +540,7 @@ class CaloINNLightningModule(pl.LightningModule):
         incident_energies : np.ndarray  shape (N, 1), in MeV
         """
         import h5py
+        from streaming_data import PreprocessedStreamingDataset
 
         self.model.eval()
         device = self.device
@@ -570,20 +548,21 @@ class CaloINNLightningModule(pl.LightningModule):
         hp = self.hparams
         dk = hp.dataset_params
 
-        latent_loader, _, _ = data_util.get_loaders(
-            val_data_path,
-            hp.xml_path,
-            hp.xml_ptype,
-            0.0,                     # val_frac=0 → use all data
-            batch_size,
-            dk.get("eps", 1.0e-10),
-            device,
+        latent_loader = PreprocessedStreamingDataset(
+            data_path=val_data_path,
+            xml_filename=hp.xml_path,
+            particle_type=hp.xml_ptype,
+            batch_size=batch_size,
+            eps=dk.get("eps", 1.0e-10),
             width_noise=self.width_noise,
-            energy=dk.get("single_energy", None),
             u0up_cut=dk.get("u0up_cut", 7.0),
             u0low_cut=dk.get("u0low_cut", 0.0),
             rew=dk.get("pt_rew", 1.0),
             dep_cut=dk.get("dep_cut", 1e10),
+            val_frac=0.0,
+            shuffle=False,
+            is_train=True,
+            layer_boundaries=self.layer_boundaries,
         )
 
         latent_chunks = []

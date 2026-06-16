@@ -1,6 +1,54 @@
 {
   "$schema": "https://opencode.ai/config.json",
-    "permission": {
-        "HDF5_USE_FILE_LOCKING=FALSE uv *": "allow"
-    }
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "edit": {
+      "./src/**": "allow",
+      "./params/**": "allow",
+      "./tests/**": "allow",
+      "./plot_params/**": "allow",
+      "./main.py": "allow",
+      "./opencode.json": "allow",
+      "./pyproject.toml": "allow"
+    },
+    "bash": {
+      "HDF5_USE_FILE_LOCKING=FALSE uv *": "allow",
+      "uv run *": "allow",
+      "uv *": "allow",
+      "git *": "allow",
+      "ls *": "allow",
+      "find *": "allow",
+      "rg *": "allow",
+      "grep *": "allow",
+      "cat *": "allow",
+      "head *": "allow",
+      "tail *": "allow",
+      "mkdir *": "allow",
+      "cp *": "allow",
+      "mv *": "allow",
+      "rm *": "allow",
+      "touch *": "allow",
+      "chmod *": "allow",
+      "python *": "allow",
+      "pip *": "allow",
+      "curl *": "allow",
+      "wget *": "allow",
+      "echo *": "allow",
+      "which *": "allow",
+      "pwd": "allow",
+      "export *": "allow",
+      "source *": "allow",
+      "cd *": "allow"
+    },
+    "external_directory": {
+      "/global/cfs/cdirs/m3443/**": "allow",
+      "/global/homes/p/pmtuan/**": "allow",
+      "/pscratch/sd/p/pmtuan/**": "allow"
+    },
+    "question": "allow",
+    "todowrite": "allow"
+  }
 }
