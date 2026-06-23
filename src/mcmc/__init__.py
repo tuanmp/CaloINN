@@ -13,15 +13,15 @@ Main classes
   to the format expected by the classifier.
 """
 
-from src.mcmc.calibration import (
+from .calibration import (
     TemperatureCalibrator,
     calibrate_platt,
     compare_calibration_methods,
     expected_calibration_error,
 )
-from src.mcmc.classifier import ClassifierWrapper, MLP
-from src.mcmc.convert import cinn_sample_to_classifier_input
-from src.mcmc.sampler import IMHSampler
+from .classifier import ClassifierWrapper, MLP
+from .convert import cinn_sample_to_classifier_input
+from .sampler import IMHSampler
 
 __all__ = [
     "ClassifierWrapper",

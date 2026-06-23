@@ -514,6 +514,137 @@ class CaloINNLightningModule(pl.LightningModule):
         return data
 
     @torch.inference_mode()
+    def mcmc_sample(
+        self,
+        energy,
+        n_chains=100,
+        n_steps=500,
+        burn_in=10,
+        thin=1,
+        classifier_ckpt=None,
+        calibrator_path=None,
+        seed=None,
+        output_file=None,
+    ):
+        """MCMC-corrected sampling via classifier density ratio.
+
+        Runs Independent Metropolis-Hastings chains that use a trained
+        classifier to reweight CINN proposals toward the true Geant4
+        distribution.  Requires a trained classifier checkpoint and a
+        fitted temperature calibrator.
+
+        Parameters
+        ----------
+        energy : float
+            log2 energy value (e.g., 16 → 2^16 MeV ≈ 65.5 GeV).
+        n_chains : int
+            Number of independent Markov chains.
+        n_steps : int
+            Total MH steps per chain (including burn-in).
+        burn_in : int
+            Initial steps to discard (default 10; IMH needs little burn-in).
+        thin : int
+            Keep every ``thin``-th post-burn-in sample (default 1 = no thinning).
+        classifier_ckpt : str
+            Path to the trained ``MLPClassifier`` Lightning checkpoint (``.ckpt``).
+        calibrator_path : str
+            Path to the fitted temperature calibrator (``.json``).
+        seed : int, optional
+            Random seed for reproducibility.
+        output_file : str, optional
+            If given, save MCMC-corrected showers to this HDF5 path.
+
+        Returns
+        -------
+        dict
+            Postprocessed data with ``"energy"`` and ``"layer_*"`` keys,
+            same format as ``generate_single_energy``.
+        """
+        if classifier_ckpt is None:
+            raise ValueError("classifier_ckpt is required for MCMC sampling.")
+        if calibrator_path is None:
+            raise ValueError("calibrator_path is required for MCMC sampling.")
+
+        from functools import partial
+
+        from mcmc.calibration import TemperatureCalibrator
+        from mcmc.classifier import ClassifierWrapper
+        from mcmc.convert import cinn_sample_to_classifier_input
+        from mcmc.sampler import IMHSampler
+
+        device = self.device
+        energy_gev = 2 ** energy / 1e3  # log2 energy → GeV
+
+        # -- Load classifier ------------------------------------------------
+        rank_zero_info(f"Loading classifier from {classifier_ckpt}")
+        classifier = ClassifierWrapper.load_from_checkpoint(
+            classifier_ckpt, device=device
+        )
+
+        # -- Load calibrator ------------------------------------------------
+        rank_zero_info(f"Loading calibrator from {calibrator_path}")
+        calibrator = TemperatureCalibrator.load(calibrator_path)
+
+        # -- Build conversion closure (binds module-level params) -----------
+        convert_fn = partial(
+            cinn_sample_to_classifier_input,
+            layer_boundaries=self.layer_boundaries,
+            q=self.q,
+            width_noise=self.width_noise,
+            xml_path=self.hparams.xml_path,
+            particle=self.hparams.xml_ptype,
+        )
+
+        # -- Run MCMC -------------------------------------------------------
+        rank_zero_info(
+            f"MCMC: {n_chains} chains × {n_steps} steps, "
+            f"burn_in={burn_in}, thin={thin}, energy={energy_gev:.2f} GeV"
+        )
+        sampler = IMHSampler(
+            model=self.model,
+            classifier=classifier,
+            calibrator=calibrator,
+            conversion_fn=convert_fn,
+            device=device,
+        )
+
+        result = sampler.sample(
+            energy_gev=energy_gev,
+            n_chains=n_chains,
+            n_steps=n_steps,
+            burn_in=burn_in,
+            thin=thin,
+            seed=seed,
+        )
+
+        # -- Postprocess ----------------------------------------------------
+        samples = result["samples"]           # (n_kept, 730)
+        energies_np = np.full(
+            (samples.shape[0], 1), energy_gev, dtype=np.float32
+        )
+
+        # Subtract width noise (matches generate_single_energy)
+        samples = samples - self.width_noise
+
+        data = data_util.postprocess(
+            samples,
+            energies_np,
+            layer_boundaries=self.layer_boundaries,
+            threshold=self.width_noise,
+            quantiles=self.q.detach().cpu().numpy(),
+        )
+
+        rank_zero_info(
+            f"MCMC complete: {samples.shape[0]} samples, "
+            f"acceptance_rate={result['acceptance_rate']:.3f}"
+        )
+
+        if output_file is not None:
+            data_util.save_data(data, filename=output_file)
+
+        return data
+
+    @torch.inference_mode()
     def generate_latent(self, val_data_path, output_file=None, num_samples=None,
                         batch_size=1000):
         """Encode validation showers into latent-space features and save.

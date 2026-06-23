@@ -12,7 +12,7 @@ from matplotlib.colors import LogNorm as LN
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 
 
-from src.mcmc._xml_handler import XMLHandler
+from ._xml_handler import XMLHandler
 
 class HighLevelFeatures:
     """ Computes all high-level features based on the specific geometry stored in the binning file
