@@ -20,12 +20,14 @@ from src.mcmc.calibration import (
     expected_calibration_error,
 )
 from src.mcmc.classifier import ClassifierWrapper, MLP
+from src.mcmc.convert import cinn_sample_to_classifier_input
 
 __all__ = [
     "ClassifierWrapper",
     "MLP",
     "TemperatureCalibrator",
     "calibrate_platt",
+    "cinn_sample_to_classifier_input",
     "compare_calibration_methods",
     "expected_calibration_error",
 ]
