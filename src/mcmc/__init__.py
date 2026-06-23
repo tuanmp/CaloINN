@@ -21,9 +21,11 @@ from src.mcmc.calibration import (
 )
 from src.mcmc.classifier import ClassifierWrapper, MLP
 from src.mcmc.convert import cinn_sample_to_classifier_input
+from src.mcmc.sampler import IMHSampler
 
 __all__ = [
     "ClassifierWrapper",
+    "IMHSampler",
     "MLP",
     "TemperatureCalibrator",
     "calibrate_platt",
