@@ -72,8 +72,8 @@ class IMHSampler:
         energy_gev: float,
         n_chains: int = 100,
         n_steps: int = 500,
-        burn_in: int = 100,
-        thin: int = 5,
+        burn_in: int = 10,
+        thin: int = 1,
         seed: int | None = None,
     ) -> dict:
         """Run IMH chains at a single incident energy.
@@ -165,7 +165,11 @@ class IMHSampler:
         c: torch.Tensor,
         r_current: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Execute one MH step for all chains.
+        """Execute one MH step for all chains simultaneously.
+
+        All N chains are processed in a single batched operation:
+        one ``model.sample()`` call, one classifier forward pass,
+        and one vectorised accept/reject — no Python loop over chains.
 
         Parameters
         ----------
@@ -247,6 +251,15 @@ class IMHSampler:
         -------
         torch.Tensor  shape (N,)
             Density ratios (clipped).
+
+        Notes
+        -----
+        The conversion path (postprocess + HLF) runs on CPU via numpy,
+        causing a GPU→CPU→GPU round-trip per MH step.  For 100 chains
+        this is ~1–2 ms/step — acceptable for O(500)-step runs.
+        A pure-GPU rewrite of postprocess and HLF computation would
+        eliminate the transfer but is not worth the engineering effort
+        at current scale.
         """
         # Convert CINN internal → classifier input (numpy path)
         temp = self.calibrator.T
