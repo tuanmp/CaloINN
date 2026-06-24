@@ -130,45 +130,33 @@ def main():
     args = parse_args()
 
     # -- Load config ---------------------------------------------------------
-    print(f"Loading config: {args.config}")
+    print(f"📂 Loading config: {args.config}")
     config = load_config(args.config)
 
     # -- Load classifier -----------------------------------------------------
-    print(f"Loading classifier: {args.classifier_ckpt}")
+    print(f"📂 Loading classifier: {args.classifier_ckpt}")
     device = args.device
     classifier = ClassifierWrapper.load_from_checkpoint(
         args.classifier_ckpt, device=device
     )
+    print(f"   ✅ Classifier loaded on {device}")
 
     # -- Build validation dataloader -----------------------------------------
-    print("Building validation dataloader...")
+    print("📦 Building validation dataloader...")
     dm_kwargs = dict(config["data"]["init_args"])
-    # If the cache doesn't exist, fall back to on-the-fly preprocessing
-    # instead of rebuilding it (which would re-read all raw HDF5s).
-    if dm_kwargs.get("cache_mode") == "memmap":
-        cache_dir = dm_kwargs.get("cache_dir", "")
-        lt = int(dm_kwargs.get("log_transform", False))
-        vc = int(dm_kwargs.get("voxel_energy_cutoff") or 0)
-        suffix = f"_log{lt}_cutoff{vc}"
-        train_meta = Path(cache_dir) / f"train{suffix}_memmap.json"
-        val_meta = Path(cache_dir) / f"val{suffix}_memmap.json"
-        if not train_meta.exists() or not val_meta.exists():
-            print(f"  Cache missing at {cache_dir}, falling back to cache_mode='none'")
-            dm_kwargs["cache_mode"] = "none"
-        else:
-            print(f"  Using memmap cache at {cache_dir}")
     datamodule = LargeHDF5MLPDataModule(**dm_kwargs)
     datamodule.setup("fit")
     val_loader = datamodule.val_dataloader()
-    print(f"Validation batches: {len(val_loader)}")
+    print(f"   📊 Validation batches: {len(val_loader)}")
 
     # -- Collect predictions -------------------------------------------------
     yhat, y = collect_validation_predictions(
         classifier, val_loader, device, args.max_val_samples
     )
+    print(f"   📊 Predictions collected: {len(yhat)} samples")
 
     # -- Fit and compare calibration methods ---------------------------------
-    print("\nFitting calibrators...")
+    print("\n🔧 Fitting calibrators...")
     # Use 80/20 split for temperature fitting (fit on 80%, eval on 20%)
     n_fit = int(len(yhat) * 0.8)
     idx = np.random.RandomState(42).permutation(len(yhat))
@@ -182,7 +170,7 @@ def main():
     calib = TemperatureCalibrator()
     calib.fit(yhat_fit, y_fit)
     calib.save(args.output)
-    print(f"\nSaved temperature calibrator (T={calib.T:.4f}) to {args.output}")
+    print(f"\n💾 Saved temperature calibrator (T={calib.T:.4f}) → {args.output}")
 
     # -- Also save comparison to a sidecar file ------------------------------
     sidecar = Path(args.output).with_suffix(".comparison.json")
@@ -197,27 +185,29 @@ def main():
     }
     with open(sidecar, "w") as f:
         json.dump(comparison_summary, f, indent=2)
-    print(f"Calibration comparison saved to {sidecar}")
+    print(f"   📊 Comparison saved → {sidecar}")
+    print("✅ Done!")
 
 
 def _print_comparison(results: dict) -> None:
     """Pretty-print calibration comparison."""
-    header = f"\n{'─' * 70}\nCalibration Method Comparison\n{'─' * 70}"
+    header = f"\n{'─' * 60}\n📊 Calibration Method Comparison\n{'─' * 60}"
     print(header)
-    print(f"{'Method':<16} {'ECE':>10} {'Brier':>10}")
-    print("-" * 38)
+    print(f"  {'Method':<16} {'ECE':>8} {'Brier':>8}")
+    print(f"  {'─' * 34}")
     for method, metrics in results.items():
-        print(f"  {method:<14} {metrics['ece']:>10.4f} {metrics['brier']:>10.4f}")
-    print("─" * 70)
+        icon = {"raw": "🔴", "isotonic": "🟡", "temperature": "🟢", "platt": "🔵"}.get(method, "  ")
+        print(f"  {icon} {method:<13} {metrics['ece']:>8.4f} {metrics['brier']:>8.4f}")
+    print(f"  {'─' * 34}")
 
     best_ece = min(results.keys(), key=lambda m: results[m]["ece"])
     best_brier = min(results.keys(), key=lambda m: results[m]["brier"])
-    print(f"  Best ECE:   {best_ece}")
-    print(f"  Best Brier: {best_brier}")
+    print(f"  🏆 Best ECE:   {best_ece}")
+    print(f"  🏆 Best Brier: {best_brier}")
 
     if "temperature" in results and "T" in results["temperature"]:
-        print(f"  Optimal T:  {results['temperature']['T']:.3f}")
-    print("─" * 70)
+        print(f"  🌡️  Optimal T:  {results['temperature']['T']:.3f}")
+    print("─" * 60)
 
 
 if __name__ == "__main__":

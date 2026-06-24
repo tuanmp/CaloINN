@@ -103,18 +103,19 @@ def main():
     energy_gev = 2 ** args.energy / 1e3
 
     # -- Load CINN ---------------------------------------------------------
-    print(f"Loading CINN from {args.cinn_ckpt}")
+    print(f"📂 Loading CINN from {args.cinn_ckpt}")
     cinn = load_cinn(args.cinn_ckpt, device, args.init_data)
-    print(f"  num_dim={cinn.num_dim}, device={device}")
+    print(f"   ✅ Loaded — num_dim={cinn.num_dim}, device={device}")
 
     # -- Load classifier ---------------------------------------------------
-    print(f"Loading classifier from {args.clf_ckpt}")
+    print(f"📂 Loading classifier from {args.clf_ckpt}")
     classifier = ClassifierWrapper.load_from_checkpoint(args.clf_ckpt, device=device)
+    print(f"   ✅ Loaded on {device}")
 
     # -- Load calibrator ---------------------------------------------------
-    print(f"Loading calibrator from {args.calibrator}")
+    print(f"📂 Loading calibrator from {args.calibrator}")
     calibrator = TemperatureCalibrator.load(args.calibrator)
-    print(f"  T = {calibrator.T:.4f}")
+    print(f"   ✅ T = {calibrator.T:.4f}")
 
     # -- Build conversion closure ------------------------------------------
     from functools import partial
@@ -131,10 +132,10 @@ def main():
     )
 
     # -- Run MCMC ----------------------------------------------------------
-    print(f"\nRunning IMH: {args.n_chains} chains × {args.n_steps} steps")
-    print(f"  energy={energy_gev:.2f} GeV (2^{args.energy} MeV)")
-    print(f"  burn_in={args.burn_in}, thin={args.thin}")
-    print(f"  log_transform={args.log_transform}, voxel_cutoff={args.voxel_cutoff}")
+    print(f"\n🔄 Running IMH: {args.n_chains} chains × {args.n_steps} steps")
+    print(f"   energy = {energy_gev:.2f} GeV (2^{args.energy:.0f} MeV)")
+    print(f"   burn_in = {args.burn_in}, thin = {args.thin}")
+    print(f"   log_transform = {args.log_transform}, voxel_cutoff = {args.voxel_cutoff}")
 
     sampler = IMHSampler(
         model=cinn.model,
@@ -154,12 +155,12 @@ def main():
         seed=args.seed,
     )
 
-    print(f"\nMCMC complete:")
-    print(f"  samples: {result['samples'].shape[0]}")
-    print(f"  acceptance_rate: {result['acceptance_rate']:.4f}")
-    print(f"  density_ratio range: [{result['density_ratios'].min():.3f}, "
+    print(f"\n   ✅ MCMC complete!")
+    print(f"   📊 samples:      {result['samples'].shape[0]}")
+    print(f"   📊 accept rate:  {result['acceptance_rate']:.4f}")
+    print(f"   📊 r(x) range:   [{result['density_ratios'].min():.3f}, "
           f"{result['density_ratios'].max():.3f}]")
-    print(f"  density_ratio median: {np.median(result['density_ratios']):.3f}")
+    print(f"   📊 r(x) median:  {np.median(result['density_ratios']):.3f}")
 
     # -- Postprocess -------------------------------------------------------
     samples = result["samples"]
@@ -178,7 +179,7 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     data_util.save_data(data, filename=str(output_path))
-    print(f"\nSaved MCMC showers to {output_path}")
+    print(f"\n💾 Saved MCMC showers → {output_path}")
 
     # -- Save metadata -----------------------------------------------------
     import json
@@ -205,7 +206,8 @@ def main():
     meta_path = output_path.with_suffix(".json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
-    print(f"Saved metadata to {meta_path}")
+    print(f"   📋 Metadata saved → {meta_path}")
+    print("✅ Done!")
 
 
 if __name__ == "__main__":
