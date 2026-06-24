@@ -143,6 +143,20 @@ def main():
     # -- Build validation dataloader -----------------------------------------
     print("Building validation dataloader...")
     dm_kwargs = dict(config["data"]["init_args"])
+    # If the cache doesn't exist, fall back to on-the-fly preprocessing
+    # instead of rebuilding it (which would re-read all raw HDF5s).
+    if dm_kwargs.get("cache_mode") == "memmap":
+        cache_dir = dm_kwargs.get("cache_dir", "")
+        lt = int(dm_kwargs.get("log_transform", False))
+        vc = int(dm_kwargs.get("voxel_energy_cutoff") or 0)
+        suffix = f"_log{lt}_cutoff{vc}"
+        train_meta = Path(cache_dir) / f"train{suffix}_memmap.json"
+        val_meta = Path(cache_dir) / f"val{suffix}_memmap.json"
+        if not train_meta.exists() or not val_meta.exists():
+            print(f"  Cache missing at {cache_dir}, falling back to cache_mode='none'")
+            dm_kwargs["cache_mode"] = "none"
+        else:
+            print(f"  Using memmap cache at {cache_dir}")
     datamodule = LargeHDF5MLPDataModule(**dm_kwargs)
     datamodule.setup("fit")
     val_loader = datamodule.val_dataloader()
