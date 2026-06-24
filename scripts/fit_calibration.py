@@ -83,11 +83,7 @@ def parse_args() -> argparse.Namespace:
 
 def load_config(config_path: str) -> dict:
     with open(config_path) as f:
-        config = yaml.safe_load(f)
-    # Disable caching to force on-the-fly preprocessing (ensures fresh data)
-    if "cache_mode" in config["data"]["init_args"]:
-        config["data"]["init_args"]["cache_mode"] = "none"
-    return config
+        return yaml.safe_load(f)
 
 
 def collect_validation_predictions(
@@ -147,7 +143,6 @@ def main():
     # -- Build validation dataloader -----------------------------------------
     print("Building validation dataloader...")
     dm_kwargs = dict(config["data"]["init_args"])
-    dm_kwargs["cache_mode"] = "none"  # force fresh preprocessing
     datamodule = LargeHDF5MLPDataModule(**dm_kwargs)
     datamodule.setup("fit")
     val_loader = datamodule.val_dataloader()
