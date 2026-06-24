@@ -17,7 +17,7 @@ from typing import Callable
 import numpy as np
 import torch
 
-from src.mcmc.calibration import TemperatureCalibrator
+from .calibration import TemperatureCalibrator
 
 
 class IMHSampler:

@@ -27,7 +27,7 @@ if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
 import data_util
-from src.mcmc._hlf import HighLevelFeatures
+from ._hlf import HighLevelFeatures
 
 
 def _compute_hlf(
