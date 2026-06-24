@@ -107,6 +107,17 @@ def _scale_shower(X_mev: np.ndarray, Einc_mev: np.ndarray) -> tuple[np.ndarray, 
     return X.astype(np.float32), cond_gev.astype(np.float32)
 
 
+def _apply_voxel_cutoff(X_mev: np.ndarray, cutoff_mev: float | None) -> np.ndarray:
+    """Zero out shower cells below an energy threshold (in MeV).
+
+    Replicates the ``voxel_energy_cutoff`` step from the classifier's
+    ``_preprocess_batch``: ``X[X <= cutoff] = 0.0``.
+    """
+    if cutoff_mev is None or cutoff_mev <= 0:
+        return X_mev
+    return np.where(X_mev > cutoff_mev, X_mev, 0.0)
+
+
 def cinn_sample_to_classifier_input(
     x_internal: np.ndarray | torch.Tensor,
     c: np.ndarray | torch.Tensor,
@@ -115,8 +126,14 @@ def cinn_sample_to_classifier_input(
     width_noise: float,
     xml_path: str,
     particle: str,
+    log_transform: bool = False,
+    voxel_energy_cutoff: float | None = None,
 ) -> np.ndarray:
     """Convert CINN internal representation to 772D classifier input.
+
+    Replicates the full ``_preprocess_batch`` pipeline from the
+    classifier's ``LargeHDF5MLPDataModule``, including optional
+    ``log1p`` transform and voxel energy cutoff.
 
     Parameters
     ----------
@@ -126,15 +143,21 @@ def cinn_sample_to_classifier_input(
     c : np.ndarray or torch.Tensor  shape (N, 1)
         Incident energies in GeV.
     layer_boundaries : list[int]
-        Cumulative cell indices defining layer boundaries (e.g. [0, 48, 96, ...]).
+        Cumulative cell indices defining layer boundaries.
     q : torch.Tensor
-        Quantile thresholds for postprocessing (cell values below q are zeroed).
+        Quantile thresholds for postprocessing.
     width_noise : float
-        Uniform noise width subtracted from CINN samples before postprocessing.
+        Uniform noise width subtracted before postprocessing.
     xml_path : str
-        Path to the XML binning file used by HighLevelFeatures.
+        Path to the XML binning file.
     particle : str
         Particle name matching the XML (e.g. "pion").
+    log_transform : bool
+        If True, apply ``np.log1p`` to energy-normalised cells.
+        Must match the classifier's training config.
+    voxel_energy_cutoff : float, optional
+        Zero out cells below this MeV threshold before HLF computation.
+        Must match the classifier's training config.
 
     Returns
     -------
@@ -179,13 +202,20 @@ def cinn_sample_to_classifier_input(
     Einc_gev = data["energy"]                     # (N, 1) in GeV
     Einc_mev = Einc_gev * 1e3                     # (N, 1) in MeV
 
-    # Step 4: Compute high-level features (requires MeV)
+    # Step 4: Apply voxel energy cutoff (before HLF, matches _preprocess_batch)
+    X_mev = _apply_voxel_cutoff(X_mev, voxel_energy_cutoff)
+
+    # Step 5: Compute high-level features (requires MeV, after cutoff)
     X_hlf = _compute_hlf(X_mev, Einc_mev, xml_path, particle)  # (N, 51)
 
-    # Step 5: Scale shower (energy-normalise, MeV→GeV for condition)
+    # Step 6: Scale shower (energy-normalise, MeV→GeV for condition)
     X_proc, cond_proc = _scale_shower(X_mev, Einc_mev)          # (N, 720), (N, 1)
 
-    # Step 6: Stack into classifier input
+    # Step 7: Optional log transform (matches log_transform config)
+    if log_transform:
+        X_proc = np.log1p(X_proc)
+
+    # Step 8: Stack into classifier input
     classifier_input = np.concatenate(
         [X_proc, cond_proc, X_hlf],
         axis=1,

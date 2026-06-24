@@ -523,6 +523,8 @@ class CaloINNLightningModule(pl.LightningModule):
         thin=1,
         classifier_ckpt=None,
         calibrator_path=None,
+        log_transform=False,
+        voxel_energy_cutoff=None,
         seed=None,
         output_file=None,
     ):
@@ -549,6 +551,13 @@ class CaloINNLightningModule(pl.LightningModule):
             Path to the trained ``MLPClassifier`` Lightning checkpoint (``.ckpt``).
         calibrator_path : str
             Path to the fitted temperature calibrator (``.json``).
+        log_transform : bool
+            If True, apply ``log1p`` to energy-normalised cells before
+            feeding to the classifier.  Must match the classifier's
+            training config.
+        voxel_energy_cutoff : float, optional
+            Zero out cells below this MeV threshold before HLF computation.
+            Must match the classifier's training config.
         seed : int, optional
             Random seed for reproducibility.
         output_file : str, optional
@@ -593,6 +602,8 @@ class CaloINNLightningModule(pl.LightningModule):
             width_noise=self.width_noise,
             xml_path=self.hparams.xml_path,
             particle=self.hparams.xml_ptype,
+            log_transform=log_transform,
+            voxel_energy_cutoff=voxel_energy_cutoff,
         )
 
         # -- Run MCMC -------------------------------------------------------
