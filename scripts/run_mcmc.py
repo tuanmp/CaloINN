@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from tqdm import tqdm
 import yaml
 
 # Ensure src/ is on sys.path (bare imports like ``import data_util``)
@@ -40,6 +41,7 @@ if SRC_DIR not in sys.path:
 import data_util
 import lightning as pl
 from lightning_module import CaloINNLightningModule
+from lightning_data import CaloINNDataModule
 from mcmc.calibration import TemperatureCalibrator
 from mcmc.classifier import ClassifierWrapper
 from mcmc.convert import cinn_sample_to_classifier_input
@@ -54,9 +56,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--cinn-ckpt", required=True, help="CINN Lightning checkpoint")
     p.add_argument("--clf-ckpt", required=True, help="Classifier .ckpt checkpoint")
+    p.add_argument("--cinn-config", help="CINN config YAML")
+    # p.add_argument("--clf-config", help="Classifier config YAML")
     p.add_argument("--calibrator", required=True, help="Temperature calibrator JSON")
-    p.add_argument("--energy", type=float, default=16.0, help="log2 energy (e.g. 16)")
-    p.add_argument("--n-chains", type=int, default=100)
+    p.add_argument("--batch-size", type=int, default=10000, help="CINN batch size")
     p.add_argument("--n-steps", type=int, default=500)
     p.add_argument("--burn-in", type=int, default=10)
     p.add_argument("--thin", type=int, default=1)
@@ -71,10 +74,12 @@ def parse_args() -> argparse.Namespace:
                    help="Clip density ratios to [1/r_clip, r_clip]")
     p.add_argument("--init-data", default=None,
                    help="Override init data path (if ckpt's path is stale)")
+    p.add_argument("--profile", action="store_true",
+                   help="Print per-component timing breakdown")
     return p.parse_args()
 
 
-def load_cinn(ckpt_path: str, device: str, init_data_override: str | None = None):
+def load_cinn(ckpt_path: str, cinn_config: str, device: str, batch_size: int):
     """Load CaloINNLightningModule from checkpoint.
 
     Uses Lightning's ``load_from_checkpoint`` which reads hyperparameters
@@ -82,30 +87,32 @@ def load_cinn(ckpt_path: str, device: str, init_data_override: str | None = None
     path is unavailable, provide ``--init-data`` to override it.
     """
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    hp = ckpt.get("hyper_parameters", {})
+    cinn_cfg = yaml.safe_load(open(cinn_config, "r"))
+    hp = cinn_cfg["model"]
 
-    if init_data_override is not None:
-        hp["setup_data_sample_path"] = init_data_override
-        print(f"Overriding init data path → {init_data_override}")
-
-    # Lightning load_from_checkpoint internally calls __init__(**hp),
-    # then loads state_dict.  We need to pass the hp explicitly.
     model = CaloINNLightningModule(**hp)
     model.load_state_dict(ckpt["state_dict"], strict=False)
     model.eval()
     model.to(device)
-    return model
+
+    # load datamodule 
+    dm_init_kw = cinn_cfg["data"]["init_args"]
+    dm_init_kw["predict_batch_size"] = batch_size
+    dm_init_kw["shuffle"] = False
+    datamodule = CaloINNDataModule(**dm_init_kw)
+    datamodule.setup()
+    return model, datamodule
 
 
 def main():
     args = parse_args()
     device = args.device
-    energy_gev = 2 ** args.energy / 1e3
 
     # -- Load CINN ---------------------------------------------------------
     print(f"📂 Loading CINN from {args.cinn_ckpt}")
-    cinn = load_cinn(args.cinn_ckpt, device, args.init_data)
-    print(f"   ✅ Loaded — num_dim={cinn.num_dim}, device={device}")
+    cinn, cinn_dm = load_cinn(args.cinn_ckpt, args.cinn_config, device, args.batch_size)
+    dataloaders = cinn_dm.predict_dataloader()
+    print(f"   ✅ Loaded — num_dim={cinn.num_dim}, device={device}, dataloaders={len(dataloaders)}")
 
     # -- Load classifier ---------------------------------------------------
     print(f"📂 Loading classifier from {args.clf_ckpt}")
@@ -132,8 +139,7 @@ def main():
     )
 
     # -- Run MCMC ----------------------------------------------------------
-    print(f"\n🔄 Running IMH: {args.n_chains} chains × {args.n_steps} steps")
-    print(f"   energy = {energy_gev:.2f} GeV (2^{args.energy:.0f} MeV)")
+    print(f"\n🔄 Running IMH: {args.n_steps} steps")
     print(f"   burn_in = {args.burn_in}, thin = {args.thin}")
     print(f"   log_transform = {args.log_transform}, voxel_cutoff = {args.voxel_cutoff}")
 
@@ -146,40 +152,67 @@ def main():
         r_clip=args.r_clip,
     )
 
-    result = sampler.sample(
-        energy_gev=energy_gev,
-        n_chains=args.n_chains,
-        n_steps=args.n_steps,
-        burn_in=args.burn_in,
-        thin=args.thin,
-        seed=args.seed,
-    )
+    for i, dataloader in enumerate(dataloaders):
+        postprocessed_data = None
+        for _, c in tqdm(dataloader, desc=f"Processing dataloader {i}"):
+            result = sampler.sample_multiple_energies(
+                energy_gev=c,
+                n_steps=args.n_steps,
+                burn_in=args.burn_in,
+                thin=args.thin,
+                seed=args.seed,
+                profile=args.profile,
+            )
 
-    print(f"\n   ✅ MCMC complete!")
-    print(f"   📊 samples:      {result['samples'].shape[0]}")
-    print(f"   📊 accept rate:  {result['acceptance_rate']:.4f}")
-    print(f"   📊 r(x) range:   [{result['density_ratios'].min():.3f}, "
-          f"{result['density_ratios'].max():.3f}]")
-    print(f"   📊 r(x) median:  {np.median(result['density_ratios']):.3f}")
+            if args.profile and "profile" in result:
+                p = result["profile"]
+                print(f"\n   ⏱️  Profile ({p['n_chains']} chains × {p['n_steps']} steps):")
+                print(f"   {'─' * 45}")
+                print(f"   {'Component':<28} {'total (s)':>8} {'ms/step':>8}")
+                print(f"   {'─' * 45}")
+                for label, key in [
+                    ("Propose (CINN sample)", "t_propose"),
+                    ("Density ratio (total)", "t_density_ratio"),
+                    ("  ├─ GPU→CPU transfer", "  gpu_to_cpu"),
+                    ("  ├─ Convert (numpy)", "  convert_np"),
+                    ("  ├─ CPU→GPU transfer", "  cpu_to_gpu"),
+                    ("  ├─ Classifier forward", "  clf_forward"),
+                    ("  └─ Compute r(x)", "  compute_ratio"),
+                    ("Accept / reject", "t_accept_reject"),
+                ]:
+                    t = p[key]
+                    ms = 1000 * t / p["n_steps"]
+                    print(f"   {label:<28} {t:>8.3f} {ms:>8.3f}")
+                print(f"   {'─' * 45}")
+                print(f"   {'TOTAL':<28} {p['t_total']:>8.3f} {p['ms_per_step']:>8.3f}")
 
-    # -- Postprocess -------------------------------------------------------
-    samples = result["samples"]
-    samples = samples - cinn.width_noise
-    energies_np = np.full((samples.shape[0], 1), energy_gev, dtype=np.float32)
+            # -- Postprocess -------------------------------------------------------
+            sample = result["samples"]
+            sample = sample - cinn.width_noise
 
-    data = data_util.postprocess(
-        samples,
-        energies_np,
-        layer_boundaries=cinn.layer_boundaries,
-        threshold=cinn.width_noise,
-        quantiles=cinn.q.detach().cpu().numpy(),
-    )
 
-    # -- Save --------------------------------------------------------------
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    data_util.save_data(data, filename=str(output_path))
-    print(f"\n💾 Saved MCMC showers → {output_path}")
+            postprocessed = data_util.postprocess(
+                sample,
+                c.numpy(),
+                layer_boundaries=cinn.layer_boundaries,
+                threshold=cinn.width_noise,
+                quantiles=cinn.q.detach().cpu().numpy(),
+            )
+
+            if postprocessed_data is None:
+                postprocessed_data = postprocessed
+            else:
+                postprocessed_data = {
+                    key : np.concatenate([postprocessed_data[key], postprocessed[key]], axis=0)
+                    for key in postprocessed_data.keys()
+                }
+
+        # -- Save --------------------------------------------------------------
+        output_path = args.output.replace(".hdf5", f"_dataloader{i}.hdf5")
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        data_util.save_data(postprocessed_data, filename=str(output_path))
+        print(f"\n💾 Saved MCMC showers → {output_path}")
 
     # -- Save metadata -----------------------------------------------------
     import json
@@ -188,12 +221,9 @@ def main():
         "clf_ckpt": args.clf_ckpt,
         "calibrator_T": calibrator.T,
         "energy_log2": args.energy,
-        "energy_gev": energy_gev,
-        "n_chains": args.n_chains,
         "n_steps": args.n_steps,
         "burn_in": args.burn_in,
         "thin": args.thin,
-        "n_samples": int(samples.shape[0]),
         "acceptance_rate": float(result["acceptance_rate"]),
         "density_ratio_mean": float(result["density_ratios"].mean()),
         "density_ratio_median": float(np.median(result["density_ratios"])),
@@ -208,6 +238,14 @@ def main():
         json.dump(meta, f, indent=2)
     print(f"   📋 Metadata saved → {meta_path}")
     print("✅ Done!")
+
+    print(f"\n   ✅ MCMC complete!")
+    # print(f"   📊 samples:      {result['samples'].shape[0]}")
+    # print(f"   📊 accept rate:  {result['acceptance_rate']:.4f}")
+    # print(f"   📊 r(x) range:   [{result['density_ratios'].min():.3f}, "
+    #       f"{result['density_ratios'].max():.3f}]")
+    # print(f"   📊 r(x) median:  {np.median(result['density_ratios']):.3f}")
+
 
 
 if __name__ == "__main__":

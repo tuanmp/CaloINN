@@ -12,6 +12,7 @@ which requires only the classifier, not the true density ``p``.
 from __future__ import annotations
 
 import math
+import time
 from typing import Callable
 
 import numpy as np
@@ -61,15 +62,158 @@ class IMHSampler:
 
         if calibrator.T is None:
             raise ValueError("Calibrator must be fitted before use.")
+    
+    @torch.inference_mode()
+    def _sample(
+        self,
+        conditions: torch.Tensor,
+        n_steps: int = 500,
+        burn_in: int = 10,
+        thin: int = 1,
+        profile: bool = False,
+    ):  
+        """Run IMH chains for multiple conditions (energies).
+
+        Parameters
+        ----------
+        conditions : torch.Tensor  shape (N, 1)
+            Incident energies in GeV.
+        n_steps : int
+            Total MH steps per chain (including burn-in).
+        burn_in : int
+            Number of initial steps to discard.
+        thin : int
+            Keep every ``thin``-th post-burn-in sample.
+        profile : bool
+            If True, collect per-component wall-clock timings.
+
+        Returns
+        -------
+        dict
+            - ``"samples"`` : np.ndarray shape (n_chains, 730)
+            - ``"acceptance_rate"`` : float
+            - ``"density_ratios"`` : np.ndarray shape (n_kept, n_chains)
+            - ``"profile"`` : dict (only if profile=True)
+        """
+
+        self.model.eval()
+        device = self._device
+
+        # Broadcast energy
+        c = conditions.reshape(-1, 1).to(device)  # (N, 1)
+        n_chains = c.shape[0]
+
+        # --- Profiling accumulators ------------------------------------
+        if profile:
+            t_propose = 0.0
+            t_density = 0.0
+            t_gpu_to_cpu = 0.0
+            t_convert = 0.0
+            t_cpu_to_gpu = 0.0
+            t_clf_fwd = 0.0
+            t_ratio = 0.0
+            t_ar = 0.0
+
+        # --- Initialise chains from CINN samples -----------------------
+        x_current = self._propose(c)                     # (n_chains, 730)
+        r_current = self._density_ratio(
+            x_current, c,
+            _profile_return=(profile, None) if not profile else None,
+        )[0] if profile else self._density_ratio(x_current, c)
+
+        # --- Storage ---------------------------------------------------
+        n_kept = max(1, (n_steps - burn_in) // thin)
+        ratios = torch.zeros((n_kept, n_chains), device=device)
+        total_accepted = 0
+        total_proposed = 0
+        storage_idx = 0
+
+        # --- MH loop ---------------------------------------------------
+        for step in range(n_steps):
+            if profile:
+                t0 = time.perf_counter()
+                x_proposed = self._propose(c)
+                t_p = time.perf_counter()
+
+                _, d_times = self._density_ratio(x_proposed, c, _profile_return=True)
+                r_proposed = d_times["result"]
+                t_d = time.perf_counter()
+
+                # Acceptance ratio
+                alpha = torch.clamp(
+                    r_proposed / (r_current + 1e-10), max=1.0
+                )
+                u = torch.rand_like(alpha)
+                accept = u < alpha
+                t_ar_step = time.perf_counter()
+
+                x_current = torch.where(accept[:, None], x_proposed, x_current)
+                r_current = torch.where(accept, r_proposed, r_current)
+
+                # Accumulate
+                t_propose += t_p - t0
+                t_gpu_to_cpu += d_times["gpu_to_cpu"]
+                t_convert += d_times["convert"]
+                t_cpu_to_gpu += d_times["cpu_to_gpu"]
+                t_clf_fwd += d_times["clf_forward"]
+                t_ratio += d_times["ratio"]
+                t_density += t_d - t_p
+                t_ar += time.perf_counter() - t_ar_step
+
+                total_accepted += int(accept.sum().item())
+                total_proposed += n_chains
+            else:
+                x_next, r_next, accepted = self._step(x_current, c, r_current)
+                total_accepted += int(accepted.sum().item())
+                total_proposed += n_chains
+                x_current = x_next
+                r_current = r_next
+
+            # Store post-burn-in, thinned
+            post_burn = step >= burn_in
+            at_thin_interval = (step - burn_in) % thin == 0
+            if post_burn and at_thin_interval:
+                ratios[storage_idx] = r_current
+                storage_idx += 1
+
+        # --- Aggregate -------------------------------------------------
+        acceptance_rate = total_accepted / max(total_proposed, 1)
+        flat_samples = x_current.cpu().numpy()    # (n_chains, 730)
+        flat_ratios = ratios.cpu().numpy()        # (n_kept, n_chains)
+
+        result = {
+            "samples": flat_samples,
+            "acceptance_rate": acceptance_rate,
+            "density_ratios": flat_ratios,
+        }
+
+        if profile:
+            result["profile"] = {
+                "n_chains": n_chains,
+                "n_steps": n_steps,
+                "t_propose": t_propose,
+                "t_density_ratio": t_density,
+                "  gpu_to_cpu": t_gpu_to_cpu,
+                "  convert_np": t_convert,
+                "  cpu_to_gpu": t_cpu_to_gpu,
+                "  clf_forward": t_clf_fwd,
+                "  compute_ratio": t_ratio,
+                "t_accept_reject": t_ar,
+                "t_total": t_propose + t_density + t_ar,
+                "ms_per_step": 1000 * (t_propose + t_density + t_ar) / n_steps,
+            }
+
+        return result
+        
 
     # ------------------------------------------------------------------
     #  Public API
     # ------------------------------------------------------------------
 
     @torch.inference_mode()
-    def sample(
+    def sample_single_energy(
         self,
-        energy_gev: float,
+        energy_gev: float | torch.Tensor,
         n_chains: int = 100,
         n_steps: int = 500,
         burn_in: int = 10,
@@ -80,7 +224,7 @@ class IMHSampler:
 
         Parameters
         ----------
-        energy_gev : float
+        energy_gev : float or torch.Tensor
             Incident energy in GeV.
         n_chains : int
             Number of independent Markov chains.
@@ -106,53 +250,59 @@ class IMHSampler:
         if seed is not None:
             torch.manual_seed(seed)
             np.random.seed(seed)
+        else:
+            from datetime import datetime
+            now = datetime.now().timestamp()
+            torch.manual_seed(int(now) % (2**32 - 1))
+            np.random.seed(int(now) % (2**32 - 1))
 
-        self.model.eval()
-        device = self._device
+        c = torch.full((n_chains, 1), float(energy_gev), device=self._device)
+        return self._sample(c, n_steps, burn_in, thin)
 
-        # Broadcast single energy to all chains
-        c = torch.full((n_chains, 1), energy_gev, device=device)
+    @torch.inference_mode()
+    def sample_multiple_energies(
+        self,
+        energy_gev: torch.Tensor,
+        n_steps: int,
+        burn_in: int,
+        thin: int,
+        seed: int | None = None,
+        profile: bool = False,
+    ) -> dict[str, np.ndarray]:
+        """Run MCMC for multiple energies. Each energy value is used to run a 
+        separate MCMC chain
 
-        # --- Initialise chains from CINN samples -----------------------
-        x_current = self._propose(c)                     # (n_chains, 730)
-        r_current = self._density_ratio(x_current, c)    # (n_chains,)
+        Parameters
+        ----------
+        energy_gev : list of float or torch.Tensor
+            Incident energies in GeV.
+        n_chains : int
+            Number of chains to run.
+        n_steps : int
+            Number of steps to run each chain.
+        burn_in : int
+            Number of burn-in steps to discard.
+        thin : int
+            Thinning factor for the samples.
+        seed : int | None, optional
+            Random seed for reproducibility.
 
-        # --- Storage ---------------------------------------------------
-        n_kept = max(1, (n_steps - burn_in) // thin)
-        samples = torch.zeros((n_kept, n_chains, x_current.shape[1]), device=device)
-        ratios = torch.zeros((n_kept, n_chains), device=device)
-        total_accepted = 0
-        total_proposed = 0
-        storage_idx = 0
-
-        # --- MH loop ---------------------------------------------------
-        for step in range(n_steps):
-            x_next, r_next, accepted = self._step(x_current, c, r_current)
-
-            total_accepted += int(accepted.sum().item())
-            total_proposed += n_chains
-
-            x_current = x_next
-            r_current = r_next
-
-            # Store post-burn-in, thinned
-            post_burn = step >= burn_in
-            at_thin_interval = (step - burn_in) % thin == 0
-            if post_burn and at_thin_interval:
-                samples[storage_idx] = x_current
-                ratios[storage_idx] = r_current
-                storage_idx += 1
-
-        # --- Aggregate -------------------------------------------------
-        acceptance_rate = total_accepted / max(total_proposed, 1)
-        flat_samples = samples.cpu().numpy().reshape(-1, samples.shape[-1])  # (n_kept * n_chains, 730)
-        flat_ratios = ratios.cpu().numpy().reshape(-1)                        # (n_kept * n_chains,)
-
-        return {
-            "samples": flat_samples,
-            "acceptance_rate": acceptance_rate,
-            "density_ratios": flat_ratios,
-        }
+        Returns
+        -------
+        dict[str, np.ndarray]
+            Dictionary containing the samples, acceptance rate, and density ratios.
+        """
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+        else:
+            from datetime import datetime
+            now = datetime.now().timestamp()
+            torch.manual_seed(int(now) % (2**32 - 1))
+            np.random.seed(int(now) % (2**32 - 1))
+        
+        c = energy_gev.reshape(-1, 1).to(self._device)
+        return self._sample(c, n_steps, burn_in, thin, profile=profile)
 
     # ------------------------------------------------------------------
     #  Single MH step
@@ -237,7 +387,8 @@ class IMHSampler:
         self,
         x_internal: torch.Tensor,
         c: torch.Tensor,
-    ) -> torch.Tensor:
+        _profile_return: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         """Compute calibrated density ratio r(x,c) = D_cal / (1 - D_cal).
 
         Parameters
@@ -246,43 +397,60 @@ class IMHSampler:
             CINN internal samples.
         c : torch.Tensor  shape (N, 1)
             Incident energies in GeV.
+        _profile_return : bool
+            If True, return (result, timing_dict) instead of just result.
 
         Returns
         -------
         torch.Tensor  shape (N,)
             Density ratios (clipped).
+        or tuple (torch.Tensor, dict) when _profile_return=True.
 
         Notes
         -----
         The conversion path (postprocess + HLF) runs on CPU via numpy,
-        causing a GPU→CPU→GPU round-trip per MH step.  For 100 chains
-        this is ~1–2 ms/step — acceptable for O(500)-step runs.
-        A pure-GPU rewrite of postprocess and HLF computation would
-        eliminate the transfer but is not worth the engineering effort
-        at current scale.
+        causing a GPU→CPU→GPU round-trip per MH step.
         """
-        # Convert CINN internal → classifier input (numpy path)
         temp = self.calibrator.T
         eps = 1e-10
+        times = {} if _profile_return else None
 
+        # GPU → CPU
+        t0 = time.perf_counter() if _profile_return else 0
         x_np = x_internal.cpu().numpy()
         c_np = c.cpu().numpy()
+        if _profile_return:
+            torch.cuda.synchronize()
+            times["gpu_to_cpu"] = time.perf_counter() - t0
 
-        # The conversion_fn signature includes all the extra args
-        # stored in the closure.  Simplest: pass them explicitly.
-        z = self.convert(x_np, c_np)                      # (N, 772) np.ndarray
+        # Conversion (numpy postprocess + HLF)
+        t1 = time.perf_counter() if _profile_return else 0
+        z = self.convert(x_np, c_np)                      # (N, 772)
+        if _profile_return:
+            times["convert"] = time.perf_counter() - t1
 
-        # Classifier forward → raw logits
+        # CPU → GPU + classifier forward
+        t2 = time.perf_counter() if _profile_return else 0
         z_t = torch.from_numpy(z).to(self._device)
+        if _profile_return:
+            torch.cuda.synchronize()
+            times["cpu_to_gpu"] = time.perf_counter() - t2
+
+        t3 = time.perf_counter() if _profile_return else 0
         logits = self.clf.forward(z_t).squeeze(-1)        # (N,)
+        if _profile_return:
+            torch.cuda.synchronize()
+            times["clf_forward"] = time.perf_counter() - t3
 
-        # Temperature calibrate: D_cal = σ(logit / T)
+        # Density ratio
+        t4 = time.perf_counter() if _profile_return else 0
         D_cal = torch.sigmoid(logits / temp)               # (N,)
-
-        # Density ratio  r = D / (1 - D)
         r = D_cal / (1.0 - D_cal + eps)                   # (N,)
-
-        # Clip for safety
         r = torch.clamp(r, 1.0 / self._r_clip, self._r_clip)
+        if _profile_return:
+            torch.cuda.synchronize()
+            times["ratio"] = time.perf_counter() - t4
+            times["result"] = r
+            return r, times
 
         return r
