@@ -45,7 +45,7 @@ from lightning_module import CaloINNLightningModule
 from lightning_data import CaloINNDataModule
 from mcmc.calibration import TemperatureCalibrator
 from mcmc.classifier import ClassifierWrapper
-from mcmc.convert import cinn_sample_to_classifier_input
+from mcmc.convert import cinn_sample_to_classifier_input, cinn_sample_to_classifier_input_torch
 from mcmc.sampler import IMHSampler
 
 torch.set_default_dtype(torch.float32)
@@ -140,6 +140,17 @@ def main():
         voxel_energy_cutoff=args.voxel_cutoff,
     )
 
+    convert_fn_torch = partial(
+        cinn_sample_to_classifier_input_torch,
+        layer_boundaries=cinn.layer_boundaries,
+        q=cinn.q,
+        width_noise=cinn.width_noise,
+        xml_path=cinn.hparams.xml_path,
+        particle=cinn.hparams.xml_ptype,
+        log_transform=args.log_transform,
+        voxel_energy_cutoff=args.voxel_cutoff,
+    )
+
     # -- Run MCMC ----------------------------------------------------------
     print(f"\n🔄 Running IMH: {args.n_steps} steps")
     print(f"   burn_in = {args.burn_in}, thin = {args.thin}")
@@ -150,6 +161,7 @@ def main():
         classifier=classifier,
         calibrator=calibrator,
         conversion_fn=convert_fn,
+        conversion_fn_torch=convert_fn_torch,
         device=device,
         r_clip=args.r_clip,
     )
@@ -169,20 +181,33 @@ def main():
 
             if args.profile and "profile" in result:
                 p = result["profile"]
-                print(f"\n   ⏱️  Profile ({p['n_chains']} chains × {p['n_steps']} steps):")
+                use_torch = p.get("use_torch_path", False)
+                print(f"\n   ⏱️  Profile ({p['n_chains']} chains × {p['n_steps']} steps)"
+                      f"{' [GPU path]' if use_torch else ' [NumPy path]'}:")
                 print(f"   {'─' * 45}")
                 print(f"   {'Component':<28} {'total (s)':>8} {'ms/step':>8}")
                 print(f"   {'─' * 45}")
-                for label, key in [
-                    ("Propose (CINN sample)", "t_propose"),
-                    ("Density ratio (total)", "t_density_ratio"),
-                    ("  ├─ GPU→CPU transfer", "  gpu_to_cpu"),
-                    ("  ├─ Convert (numpy)", "  convert_np"),
-                    ("  ├─ CPU→GPU transfer", "  cpu_to_gpu"),
-                    ("  ├─ Classifier forward", "  clf_forward"),
-                    ("  └─ Compute r(x)", "  compute_ratio"),
-                    ("Accept / reject", "t_accept_reject"),
-                ]:
+                if use_torch:
+                    labels_keys = [
+                        ("Propose (CINN sample)", "t_propose"),
+                        ("Density ratio (total)", "t_density_ratio"),
+                        ("  ├─ Convert (torch+HLF)", "  convert_np"),
+                        ("  ├─ Classifier forward", "  clf_forward"),
+                        ("  └─ Compute r(x)", "  compute_ratio"),
+                        ("Accept / reject", "t_accept_reject"),
+                    ]
+                else:
+                    labels_keys = [
+                        ("Propose (CINN sample)", "t_propose"),
+                        ("Density ratio (total)", "t_density_ratio"),
+                        ("  ├─ GPU→CPU transfer", "  gpu_to_cpu"),
+                        ("  ├─ Convert (numpy)", "  convert_np"),
+                        ("  ├─ CPU→GPU transfer", "  cpu_to_gpu"),
+                        ("  ├─ Classifier forward", "  clf_forward"),
+                        ("  └─ Compute r(x)", "  compute_ratio"),
+                        ("Accept / reject", "t_accept_reject"),
+                    ]
+                for label, key in labels_keys:
                     t = p[key]
                     ms = 1000 * t / p["n_steps"]
                     print(f"   {label:<28} {t:>8.3f} {ms:>8.3f}")

@@ -27,6 +27,7 @@ if _src_dir not in sys.path:
     sys.path.insert(0, _src_dir)
 
 import data_util
+import torch_postprocess
 from ._hlf import HighLevelFeatures
 
 
@@ -220,5 +221,93 @@ def cinn_sample_to_classifier_input(
         [X_proc, cond_proc, X_hlf],
         axis=1,
     ).astype(np.float32)
+
+    return classifier_input  # (N, 772)
+
+
+def cinn_sample_to_classifier_input_torch(
+    x_internal: torch.Tensor,
+    c: torch.Tensor,
+    layer_boundaries: list[int],
+    q: torch.Tensor,
+    width_noise: float,
+    xml_path: str,
+    particle: str,
+    log_transform: bool = False,
+    voxel_energy_cutoff: float | None = None,
+) -> torch.Tensor:
+    """GPU-native variant of ``cinn_sample_to_classifier_input``.
+
+    Accepts torch tensors on the model device, performs postprocessing
+    on GPU, and only transfers to CPU for the high-level feature
+    computation (which uses ``caloch_eval`` in numpy).  Designed as a
+    drop-in replacement inside ``IMHSampler._density_ratio`` to
+    eliminate the GPU→CPU→GPU round-trip for postprocessing.
+
+    Parameters
+    ----------
+    x_internal : torch.Tensor  shape (N, 730)
+        CINN internal samples on the model device.
+    c : torch.Tensor  shape (N, 1)
+        Incident energies in GeV on the model device.
+    layer_boundaries : list[int]
+    q : torch.Tensor
+        Per-cell quantile thresholds (on the same device as x_internal).
+    width_noise : float
+    xml_path : str
+    particle : str
+    log_transform : bool
+    voxel_energy_cutoff : float, optional
+
+    Returns
+    -------
+    torch.Tensor  shape (N, 772)
+        Classifier input tensor on the same device as ``x_internal``.
+    """
+    device = x_internal.device
+
+    # Step 1: Subtract width noise
+    x = x_internal - width_noise
+
+    # Step 2: Postprocess on GPU
+    data = torch_postprocess.postprocess(
+        x, c,
+        layer_boundaries=layer_boundaries,
+        quantiles=q,
+    )
+
+    # Step 3: Reconstruct flat shower array in MeV (on GPU)
+    n_layers = len(layer_boundaries) - 1
+    layers_gev = [data[f"layer_{i}"] for i in range(n_layers)]
+    X_gev = torch.cat(layers_gev, dim=1)  # (N, 720) in GeV
+    X_mev = X_gev * 1e3                    # (N, 720) in MeV
+    Einc_gev = data["energy"]              # (N, 1) in GeV
+    Einc_mev = Einc_gev * 1e3              # (N, 1) in MeV
+
+    # Step 4: GPU → CPU for HLF / scale / voxel (these are numpy-only)
+    X_mev_np = X_mev.cpu().numpy().astype(np.float64)
+    Einc_mev_np = Einc_mev.cpu().numpy().astype(np.float64)
+
+    # Step 5: Voxel cutoff (numpy)
+    X_mev_np = _apply_voxel_cutoff(X_mev_np, voxel_energy_cutoff)
+
+    # Step 6: High-level features (numpy, requires caloch_eval)
+    X_hlf_np = _compute_hlf(X_mev_np, Einc_mev_np, xml_path, particle)  # (N, 51)
+
+    # Step 7: Scale shower (numpy)
+    X_proc_np, cond_proc_np = _scale_shower(X_mev_np, Einc_mev_np)
+
+    # Step 8: Log transform (numpy)
+    if log_transform:
+        X_proc_np = np.log1p(X_proc_np)
+
+    # Step 9: CPU → GPU for classifier input stacking
+    X_proc_t = torch.from_numpy(X_proc_np).to(device)
+    cond_proc_t = torch.from_numpy(cond_proc_np).to(device)
+    X_hlf_t = torch.from_numpy(X_hlf_np).to(device)
+
+    classifier_input = torch.cat(
+        [X_proc_t, cond_proc_t, X_hlf_t], dim=1
+    ).float()
 
     return classifier_input  # (N, 772)

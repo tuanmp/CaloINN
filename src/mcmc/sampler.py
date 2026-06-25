@@ -35,7 +35,11 @@ class IMHSampler:
     conversion_fn : callable
         Function ``f(x_internal, c, ...) -> classifier_input`` that
         converts CINN internal representation to the 772D format
-        expected by the classifier.
+        expected by the classifier.  Accepts numpy arrays (legacy path).
+    conversion_fn_torch : callable, optional
+        Torch-native variant that accepts GPU tensors and returns a GPU
+        tensor.  When provided, ``_density_ratio`` uses this path
+        instead of the numpy round-trip, reducing CPU-GPU transfers.
     device : str or torch.device
         Device for computation.
     r_clip : float, optional
@@ -50,6 +54,7 @@ class IMHSampler:
         classifier,
         calibrator: TemperatureCalibrator,
         conversion_fn: Callable,
+        conversion_fn_torch: Callable | None = None,
         device: str | torch.device = "cpu",
         r_clip: float = 100.0,
     ):
@@ -57,6 +62,7 @@ class IMHSampler:
         self.clf = classifier
         self.calibrator = calibrator
         self.convert = conversion_fn
+        self.convert_torch = conversion_fn_torch
         self._device = torch.device(device)
         self._r_clip = r_clip
 
@@ -151,11 +157,11 @@ class IMHSampler:
                 x_current = torch.where(accept[:, None], x_proposed, x_current)
                 r_current = torch.where(accept, r_proposed, r_current)
 
-                # Accumulate
+                # Accumulate (works with both numpy and torch paths)
                 t_propose += t_p - t0
-                t_gpu_to_cpu += d_times["gpu_to_cpu"]
-                t_convert += d_times["convert"]
-                t_cpu_to_gpu += d_times["cpu_to_gpu"]
+                t_gpu_to_cpu += d_times.get("gpu_to_cpu", 0.0)
+                t_convert += d_times.get("convert", d_times.get("convert_torch", 0.0))
+                t_cpu_to_gpu += d_times.get("cpu_to_gpu", 0.0)
                 t_clf_fwd += d_times["clf_forward"]
                 t_ratio += d_times["ratio"]
                 t_density += t_d - t_p
@@ -192,6 +198,7 @@ class IMHSampler:
             result["profile"] = {
                 "n_chains": n_chains,
                 "n_steps": n_steps,
+                "use_torch_path": self.convert_torch is not None,
                 "t_propose": t_propose,
                 "t_density_ratio": t_density,
                 "  gpu_to_cpu": t_gpu_to_cpu,
@@ -409,9 +416,20 @@ class IMHSampler:
 
         Notes
         -----
-        The conversion path (postprocess + HLF) runs on CPU via numpy,
-        causing a GPU→CPU→GPU round-trip per MH step.
+        When ``self.convert_torch`` is available the GPU-native path is
+        used; otherwise falls back to the legacy numpy round-trip.
         """
+        if self.convert_torch is not None:
+            return self._density_ratio_torch(x_internal, c, _profile_return)
+        return self._density_ratio_numpy(x_internal, c, _profile_return)
+
+    def _density_ratio_numpy(
+        self,
+        x_internal: torch.Tensor,
+        c: torch.Tensor,
+        _profile_return: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict]:
+        """Legacy numpy-path density ratio (GPU→CPU→GPU round-trip)."""
         temp = self.calibrator.T
         eps = 1e-10
         times = {} if _profile_return else None
@@ -451,6 +469,44 @@ class IMHSampler:
         if _profile_return:
             torch.cuda.synchronize()
             times["ratio"] = time.perf_counter() - t4
+            times["result"] = r
+            return r, times
+
+        return r
+
+    def _density_ratio_torch(
+        self,
+        x_internal: torch.Tensor,
+        c: torch.Tensor,
+        _profile_return: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, dict]:
+        """GPU-native density ratio: postprocess on GPU, HLF on CPU."""
+        temp = self.calibrator.T
+        eps = 1e-10
+        times = {} if _profile_return else None
+
+        # Torch-native conversion (postprocess GPU, HLF numpy)
+        t0 = time.perf_counter() if _profile_return else 0
+        z_t = self.convert_torch(x_internal, c)           # (N, 772) on GPU
+        if _profile_return:
+            torch.cuda.synchronize()
+            times["convert_torch"] = time.perf_counter() - t0
+
+        # Classifier forward (already on GPU)
+        t1 = time.perf_counter() if _profile_return else 0
+        logits = self.clf.forward(z_t).squeeze(-1)        # (N,)
+        if _profile_return:
+            torch.cuda.synchronize()
+            times["clf_forward"] = time.perf_counter() - t1
+
+        # Density ratio
+        t2 = time.perf_counter() if _profile_return else 0
+        D_cal = torch.sigmoid(logits / temp)               # (N,)
+        r = D_cal / (1.0 - D_cal + eps)                   # (N,)
+        r = torch.clamp(r, 1.0 / self._r_clip, self._r_clip)
+        if _profile_return:
+            torch.cuda.synchronize()
+            times["ratio"] = time.perf_counter() - t2
             times["result"] = r
             return r, times
 
