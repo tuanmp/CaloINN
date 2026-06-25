@@ -29,6 +29,12 @@ if _src_dir not in sys.path:
 import data_util
 import torch_postprocess
 from ._hlf import HighLevelFeatures
+from .torch_hlf import (
+    compute_hlf_torch,
+    get_hlf_constants,
+    scale_shower_torch,
+    voxel_cutoff_torch,
+)
 
 
 def _compute_hlf(
@@ -236,13 +242,13 @@ def cinn_sample_to_classifier_input_torch(
     log_transform: bool = False,
     voxel_energy_cutoff: float | None = None,
 ) -> torch.Tensor:
-    """GPU-native variant of ``cinn_sample_to_classifier_input``.
+    """Fully GPU-native variant of ``cinn_sample_to_classifier_input``.
 
-    Accepts torch tensors on the model device, performs postprocessing
-    on GPU, and only transfers to CPU for the high-level feature
-    computation (which uses ``caloch_eval`` in numpy).  Designed as a
-    drop-in replacement inside ``IMHSampler._density_ratio`` to
-    eliminate the GPU→CPU→GPU round-trip for postprocessing.
+    Accepts GPU tensors and performs the entire conversion pipeline on
+    GPU: postprocessing, voxel cutoff, high-level features, shower
+    scaling, and stacking.  Detector geometry constants are loaded from
+    the XML once and cached.  Designed as a drop-in replacement inside
+    ``IMHSampler._density_ratio`` to eliminate all CPU-GPU transfers.
 
     Parameters
     ----------
@@ -284,30 +290,25 @@ def cinn_sample_to_classifier_input_torch(
     Einc_gev = data["energy"]              # (N, 1) in GeV
     Einc_mev = Einc_gev * 1e3              # (N, 1) in MeV
 
-    # Step 4: GPU → CPU for HLF / scale / voxel (these are numpy-only)
-    X_mev_np = X_mev.cpu().numpy().astype(np.float64)
-    Einc_mev_np = Einc_mev.cpu().numpy().astype(np.float64)
+    # Step 4: All remaining steps on GPU (zero CPU round-trips)
+    hlf_consts = get_hlf_constants(xml_path, particle, device=device)
 
-    # Step 5: Voxel cutoff (numpy)
-    X_mev_np = _apply_voxel_cutoff(X_mev_np, voxel_energy_cutoff)
+    # Voxel cutoff (before HLF)
+    X_mev = voxel_cutoff_torch(X_mev, voxel_energy_cutoff)
 
-    # Step 6: High-level features (numpy, requires caloch_eval)
-    X_hlf_np = _compute_hlf(X_mev_np, Einc_mev_np, xml_path, particle)  # (N, 51)
+    # High-level features (on GPU, geometry constants cached)
+    X_hlf = compute_hlf_torch(X_mev, hlf_consts)  # (N, 51)
 
-    # Step 7: Scale shower (numpy)
-    X_proc_np, cond_proc_np = _scale_shower(X_mev_np, Einc_mev_np)
+    # Scale shower (energy-normalise, MeV → GeV)
+    X_proc, cond_proc = scale_shower_torch(X_mev, Einc_mev)  # (N, 720), (N, 1)
 
-    # Step 8: Log transform (numpy)
+    # Optional log transform
     if log_transform:
-        X_proc_np = np.log1p(X_proc_np)
+        X_proc = torch.log1p(X_proc)
 
-    # Step 9: CPU → GPU for classifier input stacking
-    X_proc_t = torch.from_numpy(X_proc_np).to(device)
-    cond_proc_t = torch.from_numpy(cond_proc_np).to(device)
-    X_hlf_t = torch.from_numpy(X_hlf_np).to(device)
-
+    # Stack into classifier input
     classifier_input = torch.cat(
-        [X_proc_t, cond_proc_t, X_hlf_t], dim=1
-    ).float()
+        [X_proc, cond_proc, X_hlf], dim=1
+    )
 
     return classifier_input  # (N, 772)
