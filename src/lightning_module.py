@@ -7,6 +7,7 @@ import torch
 from lightning_fabric.utilities import rank_zero_info
 
 import data_util
+import torch_postprocess
 from model import CINN
 from training_diagnostics import TrainingDiagnostics
 
@@ -426,23 +427,24 @@ class CaloINNLightningModule(pl.LightningModule):
 
         samples, t = self.conditional_generate(c, measure_gen_time=True)
         # self.log("predict_gen_time", t / c.shape[0], on_step=False, on_epoch=True, prog_bar=True, batch_size=c.shape[0])
-        samples -= self.width_noise
+        samples = samples - self.width_noise
         samples = samples[:, 0, ...]
-        data = data_util.postprocess(
-            samples.cpu().numpy(),
-            c.cpu().numpy(),
+        data = torch_postprocess.postprocess(
+            samples,
+            c,
             layer_boundaries=self.layer_boundaries,
-            threshold=self.width_noise,
-            quantiles=self.q.detach().cpu().numpy(),
+            quantiles=self.q,
         )
 
-        incident_energies, layers = data_util.get_energy_and_sorted_layers(data)
-        assert torch.allclose(torch.tensor(incident_energies), c.cpu(), rtol=0, atol=1e-3), "Mismatch between input energies and postprocessed energies"
-        incident_energies *= 1.e3
+        number_of_layers = len(self.layer_boundaries) - 1
+        incident_energies = data["energy"]
+        layers = [data[f"layer_{i}"] for i in range(number_of_layers)]
+        assert torch.allclose(incident_energies, c, rtol=0, atol=1e-3), "Mismatch between input energies and postprocessed energies"
+        incident_energies = incident_energies * 1.e3
 
-        shower = np.concatenate(layers, axis=1) * 1.e3
+        shower = torch.cat(layers, dim=1) * 1.e3
 
-        return incident_energies.astype(np.float32), shower.astype(np.float32), t / c.shape[0]
+        return incident_energies.detach().cpu().numpy().astype(np.float32), shower.detach().cpu().numpy().astype(np.float32), t / c.shape[0]
 
 
     @torch.inference_mode()
@@ -497,21 +499,22 @@ class CaloINNLightningModule(pl.LightningModule):
             stop = min(batch_size * (batch + 1), num_samples)
             samples[start:stop] = self.model.sample(1, energies[start:stop])
 
-        samples = samples[:, 0, ...].cpu().numpy()
-        energies_np = energies.cpu().numpy()
-        samples -= self.width_noise
+        samples = samples[:, 0, ...]
+        samples = samples - self.width_noise
 
-        data = data_util.postprocess(
-            samples, energies_np,
+        data = torch_postprocess.postprocess(
+            samples, energies,
             layer_boundaries=self.layer_boundaries,
-            threshold=self.width_noise,
-            quantiles=self.q.detach().cpu().numpy(),
+            quantiles=self.q,
         )
 
-        if output_file is not None:
-            data_util.save_data(data, filename=output_file)
+        # Preserve the legacy NumPy dict return type for downstream callers.
+        data_np = {k: v.detach().cpu().numpy() for k, v in data.items()}
 
-        return data
+        if output_file is not None:
+            data_util.save_data(data_np, filename=output_file)
+
+        return data_np
 
     @torch.inference_mode()
     def mcmc_sample(
@@ -629,21 +632,24 @@ class CaloINNLightningModule(pl.LightningModule):
         )
 
         # -- Postprocess ----------------------------------------------------
-        samples = result["samples"]           # (n_kept, 730)
+        samples_np = result["samples"]           # (n_kept, 730)
         energies_np = np.full(
-            (samples.shape[0], 1), energy_gev, dtype=np.float32
+            (samples_np.shape[0], 1), energy_gev, dtype=np.float32
         )
 
         # Subtract width noise (matches generate_single_energy)
-        samples = samples - self.width_noise
+        samples = torch.from_numpy(samples_np - self.width_noise).to(device)
+        energies = torch.from_numpy(energies_np).to(device)
 
-        data = data_util.postprocess(
+        data = torch_postprocess.postprocess(
             samples,
-            energies_np,
+            energies,
             layer_boundaries=self.layer_boundaries,
-            threshold=self.width_noise,
-            quantiles=self.q.detach().cpu().numpy(),
+            quantiles=self.q,
         )
+
+        # Preserve the legacy NumPy dict return type for downstream callers.
+        data_np = {k: v.detach().cpu().numpy() for k, v in data.items()}
 
         rank_zero_info(
             f"MCMC complete: {samples.shape[0]} samples, "
@@ -651,9 +657,9 @@ class CaloINNLightningModule(pl.LightningModule):
         )
 
         if output_file is not None:
-            data_util.save_data(data, filename=output_file)
+            data_util.save_data(data_np, filename=output_file)
 
-        return data
+        return data_np
 
     @torch.inference_mode()
     def generate_latent(self, val_data_path, output_file=None, num_samples=None,
