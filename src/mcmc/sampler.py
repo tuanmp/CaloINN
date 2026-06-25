@@ -133,6 +133,7 @@ class IMHSampler:
             if profile:
                 t0 = time.perf_counter()
                 x_proposed = self._propose(c)
+                torch.cuda.synchronize()
                 t_p = time.perf_counter()
 
                 _, d_times = self._density_ratio(x_proposed, c, _profile_return=True)
@@ -376,8 +377,8 @@ class IMHSampler:
         """
         # model.sample(num_pts, condition) → (len(condition), num_pts, dims)
         # For N chains at the same energy: broadcast to 1 condition, N pts
-        samples = self.model.sample(c.shape[0], c[:1])   # (1, N, 730)
-        return samples.squeeze(0)                         # (N, 730)
+        samples = self.model.sample(1, c)   # (1, N, 730)
+        return samples.squeeze(1)                         # (N, 730)
 
     # ------------------------------------------------------------------
     #  Density ratio via classifier
