@@ -70,8 +70,10 @@ class CaloINNLightningModule(pl.LightningModule):
         init_data_c=None,
         init_layer_boundaries=None,
         init_num_train_samples=None,
+        init_from_legacy_train_split=False,
         # max_samples: randomly subsample init data (matches legacy behavior)
         max_samples=None,
+        **kwargs
     ):
         super().__init__()
 

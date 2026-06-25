@@ -66,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", default="mcmc_samples.hdf5", help="Output HDF5 path")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--n-samples", type=int, default=-1, help="Number of MCMC samples to generate")
     p.add_argument("--log-transform", action="store_true",
                    help="Apply log1p to energy-normalised cells")
     p.add_argument("--voxel-cutoff", type=float, default=None,
@@ -98,7 +99,7 @@ def load_cinn(ckpt_path: str, cinn_config: str, device: str, batch_size: int):
     # load datamodule 
     dm_init_kw = cinn_cfg["data"]["init_args"]
     dm_init_kw["predict_batch_size"] = batch_size
-    dm_init_kw["shuffle"] = False
+    dm_init_kw["shuffle"] = True
     datamodule = CaloINNDataModule(**dm_init_kw)
     datamodule.setup()
     return model, datamodule
@@ -154,6 +155,7 @@ def main():
 
     for i, dataloader in enumerate(dataloaders):
         postprocessed_data = None
+        n_samples = 0
         for _, c in tqdm(dataloader, desc=f"Processing dataloader {i}"):
             result = sampler.sample_multiple_energies(
                 energy_gev=c,
@@ -189,7 +191,7 @@ def main():
             # -- Postprocess -------------------------------------------------------
             sample = result["samples"]
             sample = sample - cinn.width_noise
-
+            n_samples += sample.shape[0]
 
             postprocessed = data_util.postprocess(
                 sample,
@@ -206,6 +208,10 @@ def main():
                     key : np.concatenate([postprocessed_data[key], postprocessed[key]], axis=0)
                     for key in postprocessed_data.keys()
                 }
+            
+            if args.n_samples > 0 and n_samples >= args.n_samples:
+                print(f"\n   ✅ Reached target of {args.n_samples} samples, stopping early.")
+                break
 
         # -- Save --------------------------------------------------------------
         output_path = args.output.replace(".hdf5", f"_dataloader{i}.hdf5")
@@ -220,7 +226,6 @@ def main():
         "cinn_ckpt": args.cinn_ckpt,
         "clf_ckpt": args.clf_ckpt,
         "calibrator_T": calibrator.T,
-        "energy_log2": args.energy,
         "n_steps": args.n_steps,
         "burn_in": args.burn_in,
         "thin": args.thin,

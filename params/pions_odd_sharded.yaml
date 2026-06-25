@@ -52,7 +52,7 @@ data:
     eval_dataset: "1-pions"
     num_workers: 4
     use_sharded: true
-    predict_multiplier: 2
+    predict_multiplier: 1
     predict_batch_size: 50000
     dataset_kwargs:
       xml_path: binning_pion_odd_coarse_hcal.xml
