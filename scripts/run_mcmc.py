@@ -39,6 +39,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 import data_util
+import torch_postprocess
 import lightning as pl
 from lightning_module import CaloINNLightningModule
 from lightning_data import CaloINNDataModule
@@ -188,18 +189,20 @@ def main():
                 print(f"   {'─' * 45}")
                 print(f"   {'TOTAL':<28} {p['t_total']:>8.3f} {p['ms_per_step']:>8.3f}")
 
-            # -- Postprocess -------------------------------------------------------
-            sample = result["samples"]
-            sample = sample - cinn.width_noise
-            n_samples += sample.shape[0]
+            # -- Postprocess (GPU-native) -------------------------------------------
+            sample_np = result["samples"]
+            n_samples += sample_np.shape[0]
 
-            postprocessed = data_util.postprocess(
-                sample,
-                c.numpy(),
+            # Move to GPU, run post-processing, bring back to CPU dict.
+            sample_t = torch.from_numpy(sample_np - cinn.width_noise).to(device)
+            c_t = c.to(device)
+            data = torch_postprocess.postprocess(
+                sample_t,
+                c_t,
                 layer_boundaries=cinn.layer_boundaries,
-                threshold=cinn.width_noise,
-                quantiles=cinn.q.detach().cpu().numpy(),
+                quantiles=cinn.q,
             )
+            postprocessed = {k: v.detach().cpu().numpy() for k, v in data.items()}
 
             if postprocessed_data is None:
                 postprocessed_data = postprocessed
