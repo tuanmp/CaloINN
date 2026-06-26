@@ -106,6 +106,39 @@ def integrated_autocorr_time(acf):
     return tau
 
 
+def _plot_acf(acf, path, title="Autocorrelation function"):
+    """Render ACF vs lag and save to file."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    lags = np.arange(len(acf))
+
+    fig, ax = plt.subplots(figsize=(8, 4))
+    # Stem plot for the discrete lags
+    markerline, stemlines, baseline = ax.stem(
+        lags, acf, linefmt="-b", markerfmt="ob", basefmt="k-"
+    )
+    plt.setp(stemlines, linewidth=0.8)
+    plt.setp(markerline, markersize=3)
+
+    # Confidence band: ±2/√N is a common rule-of-thumb for white noise
+    # (approximate, not rigorous for MCMC).  Use the number of chains.
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.axhline(0.05, color="gray", linestyle="--", linewidth=0.7, alpha=0.6)
+    ax.axhline(-0.05, color="gray", linestyle="--", linewidth=0.7, alpha=0.6)
+
+    ax.set_xlabel("Lag (steps)")
+    ax.set_ylabel("Autocorrelation ρ(k)")
+    ax.set_title(title)
+    ax.set_xlim(-0.5, len(lags) - 0.5)
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="MCMC density ratio sampling for CaloINN."
@@ -266,9 +299,14 @@ def main():
 
     # -- Save ACF to file for plotting ------------------------------------------
     output_base = args.output.replace(".hdf5", "")
-    acf_path = f"{output_base}_acf.npy"
-    np.save(acf_path, acf_mean.numpy())
-    print(f"\n   💾 Mean ACF saved → {acf_path}")
+    acf_npy_path = f"{output_base}_acf.npy"
+    acf_png_path = f"{output_base}_acf.png"
+    np.save(acf_npy_path, acf_mean.numpy())
+    print(f"\n   💾 Mean ACF saved → {acf_npy_path}")
+
+    # -- Plot ACF ---------------------------------------------------------------
+    _plot_acf(acf_mean.numpy(), acf_png_path, title=f"Density-ratio ACF (IACT = {tau.item():.1f}, ESS = {ess:.0f})")
+    print(f"   📈 ACF plot saved → {acf_png_path}")
     print("✅ Done!")
 
 
