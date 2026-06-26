@@ -57,23 +57,26 @@ torch.set_default_dtype(torch.float32)
 
 
 def batch_autocorrelation(ratios):
-    """Compute ACF for all chains in parallel via Wiener-Khinchin (FFT).
+    """Compute ACF for all chains in parallel (direct sum-of-products).
 
-    Zero-pads to 2L-1 to avoid circular wrap-around, then a single
-    batched cuFFT call processes all C chains simultaneously.
+    Uses the definition
+        ρ(k) = Σₙ[(xₙ - μ)(x_{n+k} - μ)] / Σₙ[(xₙ - μ)²]
+    computed in a single batched operation on GPU.
+
+    Complexity O(L²·C).  For typical MCMC settings (L=50–500, C=10³–10⁴)
+    this is still fast on GPU, and it guarantees ρ(0) ≡ 1 exactly.
 
     Args:
         ratios: shape (L, C) --- L=chain_length, C=n_chains.
     Returns:
-        acf: shape (L, C) --- autocorrelation per chain, rho(k,c).
+        acf: shape (L, C) --- autocorrelation per chain, ρ(k,c).
     """
     L = ratios.shape[0]
-    x = ratios - ratios.mean(dim=0, keepdim=True)
-    n_fft = 2 * L - 1
-    X = torch.fft.rfft(x, n=n_fft, dim=0)
-    power = X.real ** 2 + X.imag ** 2
-    acf_raw = torch.fft.irfft(power, dim=0)[:L]
-    acf = acf_raw / (acf_raw[0:1] + 1e-10)
+    x = ratios - ratios.mean(dim=0, keepdim=True)  # center each chain
+    var = (x * x).sum(dim=0) + 1e-10               # lag-0 autocovariance
+    acf = torch.zeros(L, ratios.shape[1], device=ratios.device, dtype=ratios.dtype)
+    for k in range(L):
+        acf[k] = (x[:L - k] * x[k:]).sum(dim=0) / var
     return acf
 
 
@@ -296,6 +299,33 @@ def main():
     print(f"   ║  {'Eff. sample size':>24}: {ess:>12.0f} ║")
     print(f"   ║  {'ESS per chain':>24}: {(ess / C):>12.2f} ║")
     print(f"   ╚{'═' * 50}╝")
+
+    # -- Per-lag ACF table ------------------------------------------------------
+    print(f"\n   ╔{'═' * 58}╗")
+    print(f"   ║  {'Autocorrelation ρ(k) by lag':^54} ║")
+    print(f"   ╠{'═' * 58}╣")
+    print(f"   ║ {'k':>3} │ {'ρ(k)':>8}  │ {'Γ_m = ρ(2m)+ρ(2m+1)':>26} │ {'note':^12} ║")
+    print(f"   ╠{'═' * 58}╣")
+    for k in range(min(L, 20)):
+        rho_k = acf_mean[k].item()
+        note = ""
+        if k == 0:
+            note = "ρ(0) ≡ 1"
+        elif k == 1:
+            note = "first-order"
+        elif abs(rho_k) < 0.01:
+            note = "≈ 0"
+        elif k > 0 and rho_k < 0:
+            note = "anti-corr ↓"
+        # Show pair sums at even lags
+        gamma = ""
+        if k % 2 == 0 and k + 1 < L:
+            g_m = acf_mean[k].item() + acf_mean[k + 1].item()
+            gamma = f"Γ_{k//2} = {g_m:+.4f}"
+        print(f"   ║ {k:>3} │ {rho_k:>+8.4f}  │ {gamma:>26} │ {note:^12} ║")
+    if L > 20:
+        print(f"   ║ {'...':>3} │ {'...':>8}  │ {'':>26} │ {'':^12} ║")
+    print(f"   ╚{'═' * 58}╝")
 
     # -- Save ACF to file for plotting ------------------------------------------
     output_base = args.output.replace(".hdf5", "")
