@@ -18,7 +18,7 @@ from typing import Callable
 import numpy as np
 import torch
 
-from .calibration import TemperatureCalibrator
+from .calibration import BaseCalibrator
 
 
 class IMHSampler:
@@ -30,8 +30,8 @@ class IMHSampler:
         Trained CINN model.  Must provide ``sample(num_pts, condition)``.
     classifier : ClassifierWrapper
         Trained classifier that outputs raw logits.
-    calibrator : TemperatureCalibrator
-        Fitted temperature calibrator for density ratio computation.
+    calibrator : BaseCalibrator
+        Fitted calibrator for density ratio computation.
     conversion_fn : callable
         Function ``f(x_internal, c, ...) -> classifier_input`` that
         converts CINN internal representation to the 772D format
@@ -52,7 +52,7 @@ class IMHSampler:
         self,
         model,
         classifier,
-        calibrator: TemperatureCalibrator,
+        calibrator: BaseCalibrator,
         conversion_fn: Callable,
         conversion_fn_torch: Callable | None = None,
         device: str | torch.device = "cpu",
@@ -66,7 +66,7 @@ class IMHSampler:
         self._device = torch.device(device)
         self._r_clip = r_clip
 
-        if calibrator.T is None:
+        if not calibrator.is_fitted:
             raise ValueError("Calibrator must be fitted before use.")
     
     @torch.inference_mode()
@@ -430,7 +430,6 @@ class IMHSampler:
         _profile_return: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         """Legacy numpy-path density ratio (GPU→CPU→GPU round-trip)."""
-        temp = self.calibrator.T
         eps = 1e-10
         times = {} if _profile_return else None
 
@@ -463,7 +462,8 @@ class IMHSampler:
 
         # Density ratio
         t4 = time.perf_counter() if _profile_return else 0
-        D_cal = torch.sigmoid(logits / temp)               # (N,)
+        calibrated_logits = self.calibrator.transform_logits(logits)
+        D_cal = torch.sigmoid(calibrated_logits)           # (N,)
         r = D_cal / (1.0 - D_cal + eps)                   # (N,)
         r = torch.clamp(r, 1.0 / self._r_clip, self._r_clip)
         if _profile_return:
@@ -481,7 +481,6 @@ class IMHSampler:
         _profile_return: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         """GPU-native density ratio: postprocess on GPU, HLF on CPU."""
-        temp = self.calibrator.T
         eps = 1e-10
         times = {} if _profile_return else None
 
@@ -501,7 +500,8 @@ class IMHSampler:
 
         # Density ratio
         t2 = time.perf_counter() if _profile_return else 0
-        D_cal = torch.sigmoid(logits / temp)               # (N,)
+        calibrated_logits = self.calibrator.transform_logits(logits)
+        D_cal = torch.sigmoid(calibrated_logits)           # (N,)
         r = D_cal / (1.0 - D_cal + eps)                   # (N,)
         r = torch.clamp(r, 1.0 / self._r_clip, self._r_clip)
         if _profile_return:
