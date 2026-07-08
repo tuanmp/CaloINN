@@ -131,9 +131,6 @@ class BaseCalibrator(ABC):
 
         if path.suffix == ".npz":
             data = np.load(path)
-            # Forward reference — defined later in this module
-            from mcmc.calibration import IsotonicCalibrator  # type: ignore[import-not-found]
-
             iso = IsotonicCalibrator()
             iso._iso_reg = IsotonicRegression(out_of_bounds="clip")
             iso._iso_reg.X_thresholds_ = data["X_thresholds"]
@@ -146,13 +143,10 @@ class BaseCalibrator(ABC):
         with open(path) as f:
             data = json.load(f)
 
-        method = data.get("method", "temperature")  # legacy files have no "method" key
+        method = data.get("method", "temperature")
         if method == "temperature":
             return TemperatureCalibrator(T=float(data["T"]))
         elif method == "platt":
-            # Forward reference — defined later in this module
-            from mcmc.calibration import PlattCalibrator  # type: ignore[import-not-found]
-
             return PlattCalibrator(a=float(data["a"]), b=float(data["b"]))
         else:
             raise ValueError(f"Unknown calibration method: {method}")
@@ -386,7 +380,154 @@ class PlattCalibrator(BaseCalibrator):
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 3.  Platt scaling (alternative calibration)
+# 3.  Isotonic regression calibrator
+# ═══════════════════════════════════════════════════════════════════════
+
+class IsotonicCalibrator(BaseCalibrator):
+    """Isotonic regression calibration.
+
+    Fits a non-parametric monotonic function on validation probabilities.
+    Supports two backends:
+
+    - **Torch-native** (default): pure-PyTorch piecewise linear
+      interpolation using ``X_thresholds_`` / ``y_thresholds_``.  Stays
+      on GPU, zero CPU transfers.
+    - **sklearn fallback**: uses the fitted ``IsotonicRegression``
+      object for correctness reference.
+
+    At inference, ``transform_logits`` does::
+
+        probs = σ(logits)
+        cal_probs = isotonic_fn(probs)
+        return logit(cal_probs)
+
+    Parameters
+    ----------
+    use_torch : bool
+        If True (default), use the torch-native interpolation path.
+        If False, use sklearn ``.transform()``.
+    """
+
+    def __init__(self, use_torch: bool = True):
+        self._iso_reg = None
+        self._X_thresholds = None
+        self._y_thresholds = None
+        self._use_torch = use_torch
+        self._fitted = False
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._fitted
+
+    def fit(
+        self,
+        yhat_val: np.ndarray,
+        y_val: np.ndarray,
+    ) -> "IsotonicCalibrator":
+        """Fit isotonic regression on validation probabilities."""
+        self._iso_reg = IsotonicRegression(out_of_bounds="clip")
+        self._iso_reg.fit(yhat_val.ravel(), y_val.ravel())
+
+        # Extract thresholds for torch-native path
+        self._X_thresholds = torch.from_numpy(
+            self._iso_reg.X_thresholds_.copy()
+        ).float()
+        self._y_thresholds = torch.from_numpy(
+            self._iso_reg.y_thresholds_.copy()
+        ).float()
+        self._fitted = True
+
+        # Validate torch-native against sklearn on a small probe set
+        if self._use_torch and len(yhat_val) > 0:
+            probe = torch.linspace(0.0, 1.0, 101)
+            torch_out = self._isotonic_transform_torch(probe).numpy()
+            sklearn_out = self._iso_reg.transform(probe.numpy().reshape(-1, 1)).ravel()
+            max_err = np.abs(torch_out - sklearn_out).max()
+            if max_err > 1e-5:
+                import warnings
+                warnings.warn(
+                    f"IsotonicCalibrator: torch vs sklearn max error = {max_err:.2e}. "
+                    f"Consider use_torch=False for this calibrator."
+                )
+        return self
+
+    def transform_logits(
+        self, logits: np.ndarray | torch.Tensor
+    ) -> np.ndarray | torch.Tensor:
+        """Apply isotonic calibration to logits.
+
+        Returns calibrated logits: ``logit( f(σ(logits)) )``.
+        """
+        if not self.is_fitted:
+            raise RuntimeError("IsotonicCalibrator not fitted. Call fit() first.")
+
+        # Work in torch space for consistency; convert numpy inputs
+        is_numpy = isinstance(logits, np.ndarray)
+        if is_numpy:
+            logits = torch.from_numpy(np.asarray(logits, dtype=np.float64))
+
+        probs = torch.sigmoid(logits)
+
+        if self._use_torch:
+            cal_probs = self._isotonic_transform_torch(probs)
+        else:
+            cal_probs = self._isotonic_transform_sklearn(probs)
+
+        # Convert calibrated probabilities back to logits
+        eps = 1e-8
+        cal_probs = torch.clamp(cal_probs, eps, 1.0 - eps)
+        calibrated_logits = torch.log(cal_probs / (1.0 - cal_probs))
+
+        if is_numpy:
+            return calibrated_logits.numpy()
+        return calibrated_logits
+
+    def _isotonic_transform_torch(self, probs: torch.Tensor) -> torch.Tensor:
+        """Torch-native piecewise linear interpolation.
+
+        Mirrors sklearn's IsotonicRegression.transform() using
+        searchsorted + linear interpolation within each bin.
+        """
+        X = self._X_thresholds.to(probs.device)
+        Y = self._y_thresholds.to(probs.device)
+        n_thresh = len(X)
+
+        if n_thresh == 0:
+            return probs
+
+        # Find the right bin for each probability
+        idx = torch.searchsorted(X, probs)
+        idx = idx.clamp(1, n_thresh - 1)
+
+        x_lo = X[idx - 1]
+        x_hi = X[idx]
+        y_lo = Y[idx - 1]
+        y_hi = Y[idx]
+
+        # Linear interpolation: y = y_lo + (y_hi - y_lo) * (x - x_lo) / (x_hi - x_lo)
+        t = (probs - x_lo) / (x_hi - x_lo + 1e-10)
+        t = t.clamp(0.0, 1.0)
+        return y_lo + t * (y_hi - y_lo)
+
+    def _isotonic_transform_sklearn(self, probs: torch.Tensor) -> torch.Tensor:
+        """sklearn fallback: CPU roundtrip through IsotonicRegression.transform."""
+        probs_np = probs.cpu().numpy().reshape(-1, 1)
+        cal_np = self._iso_reg.transform(probs_np).ravel()
+        return torch.from_numpy(cal_np).to(probs.device)
+
+    def save(self, path: str | Path) -> None:
+        """Save thresholds to .npz."""
+        if not self.is_fitted:
+            raise RuntimeError("IsotonicCalibrator not fitted.")
+        np.savez(
+            path,
+            X_thresholds=self._iso_reg.X_thresholds_,
+            y_thresholds=self._iso_reg.y_thresholds_,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 4.  Platt scaling (alternative calibration — legacy)
 # ═══════════════════════════════════════════════════════════════════════
 
 def calibrate_platt(
@@ -429,7 +570,7 @@ def calibrate_platt(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 4.  Method comparison driver
+# 5.  Method comparison driver
 # ═══════════════════════════════════════════════════════════════════════
 
 def compare_calibration_methods(
@@ -501,7 +642,7 @@ def compare_calibration_methods(
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 5.  Helpers
+# 6.  Helpers
 # ═══════════════════════════════════════════════════════════════════════
 
 def _prob_to_logit(prob: np.ndarray, eps: float = 1e-8) -> np.ndarray:
