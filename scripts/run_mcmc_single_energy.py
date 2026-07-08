@@ -7,11 +7,12 @@ showers toward the true Geant4 distribution.
 
 Usage::
 
-    uv run python scripts/run_mcmc.py \
-        --cinn-ckpt /path/to/cinn.ckpt \
-        --clf-ckpt /path/to/classifier.ckpt \
-        --calibrator /path/to/calibrator.json \
-        --config params/pions_odd.yaml \
+    uv run python scripts/run_mcmc_single_energy.py \\
+        --cinn-ckpt /path/to/cinn.ckpt \\
+        --clf-ckpt /path/to/classifier.ckpt \\
+        --calibrator /path/to/calibrator.json \\
+        --energy 10000 \\
+        --config params/pions_odd.yaml \\
         --output mcmc_samples.hdf5
 
 The calibrator file can be a JSON (temperature or Platt scaling)
@@ -57,24 +58,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--clf-ckpt", required=True, help="Classifier .ckpt checkpoint")
     p.add_argument("--cinn-config", help="CINN config YAML")
     # p.add_argument("--clf-config", help="Classifier config YAML")
-    p.add_argument("--calibrator", required=True,
-                   help="Calibrator file (JSON or .npz, auto-detects method)")
-    p.add_argument("--batch-size", type=int, default=10000, help="CINN batch size")
+    p.add_argument("--calibrator", required=True, help="Temperature calibrator JSON")
     p.add_argument("--n-steps", type=int, default=500)
     p.add_argument("--burn-in", type=int, default=10)
     p.add_argument("--thin", type=int, default=1)
     p.add_argument("--output", default="mcmc_samples.hdf5", help="Output HDF5 path")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seed", type=int, default=None)
-    p.add_argument("--n-samples", type=int, default=-1, help="Number of MCMC samples to generate")
+    p.add_argument("--n-samples", type=int, default=10000, help="Number of MCMC samples to generate")
+    p.add_argument("--batch-size", type=int, default=1000, help="Batch size for CINN sampling")
+    p.add_argument("--energy", type=float, default=10000, help="Energy in MeV for CINN sampling")
     p.add_argument("--log-transform", action="store_true",
                    help="Apply log1p to energy-normalised cells")
     p.add_argument("--voxel-cutoff", type=float, default=None,
                    help="Zero cells below this MeV threshold")
     p.add_argument("--r-clip", type=float, default=100.0,
                    help="Clip density ratios to [1/r_clip, r_clip]")
-    p.add_argument("--profile", action="store_true",
-                   help="Print per-component timing breakdown")
     return p.parse_args()
 
 
@@ -89,24 +88,18 @@ def load_cinn(ckpt_path: str, cinn_config: str, device: str, batch_size: int):
     model.eval()
     model.to(device)
 
-    # load datamodule 
-    dm_init_kw = cinn_cfg["data"]["init_args"]
-    dm_init_kw["predict_batch_size"] = batch_size
-    dm_init_kw["shuffle"] = True
-    datamodule = CaloINNDataModule(**dm_init_kw)
-    datamodule.setup()
-    return model, datamodule
+    return model
 
 
 def main():
     args = parse_args()
     device = args.device
+    c = torch.tensor(args.energy, dtype=torch.float32, device=device) / 1000.0  # MeV → GeV
 
     # -- Load CINN ---------------------------------------------------------
     print(f"📂 Loading CINN from {args.cinn_ckpt}")
-    cinn, cinn_dm = load_cinn(args.cinn_ckpt, args.cinn_config, device, args.batch_size)
-    dataloaders = cinn_dm.predict_dataloader()
-    print(f"   ✅ Loaded — num_dim={cinn.num_dim}, device={device}, dataloaders={len(dataloaders)}")
+    cinn = load_cinn(args.cinn_ckpt, args.cinn_config, device, args.batch_size)
+    print(f"   ✅ Loaded — num_dim={cinn.num_dim}, device={device}")
 
     # -- Load classifier ---------------------------------------------------
     print(f"📂 Loading classifier from {args.clf_ckpt}")
@@ -158,87 +151,30 @@ def main():
         r_clip=args.r_clip,
     )
 
-    for i, dataloader in enumerate(dataloaders):
-        postprocessed_data = None
-        n_samples = 0
-        for _, c in tqdm(dataloader, desc=f"Processing dataloader {i}"):
-            result = sampler.sample_multiple_energies(
-                energy_gev=c,
-                n_steps=args.n_steps,
-                burn_in=args.burn_in,
-                thin=args.thin,
-                seed=args.seed,
-                profile=args.profile,
-            )
+    postprocessed_data = None
+    for batch in tqdm(range(0, args.n_samples, args.batch_size), desc="Batches"):
 
-            if args.profile and "profile" in result:
-                p = result["profile"]
-                use_torch = p.get("use_torch_path", False)
-                print(f"\n   ⏱️  Profile ({p['n_chains']} chains × {p['n_steps']} steps)"
-                      f"{' [GPU path]' if use_torch else ' [NumPy path]'}:")
-                print(f"   {'─' * 45}")
-                print(f"   {'Component':<28} {'total (s)':>8} {'ms/step':>8}")
-                print(f"   {'─' * 45}")
-                if use_torch:
-                    labels_keys = [
-                        ("Propose (CINN sample)", "t_propose"),
-                        ("Density ratio (total)", "t_density_ratio"),
-                        ("  ├─ Convert (torch+HLF)", "  convert_np"),
-                        ("  ├─ Classifier forward", "  clf_forward"),
-                        ("  └─ Compute r(x)", "  compute_ratio"),
-                        ("Accept / reject", "t_accept_reject"),
-                    ]
-                else:
-                    labels_keys = [
-                        ("Propose (CINN sample)", "t_propose"),
-                        ("Density ratio (total)", "t_density_ratio"),
-                        ("  ├─ GPU→CPU transfer", "  gpu_to_cpu"),
-                        ("  ├─ Convert (numpy)", "  convert_np"),
-                        ("  ├─ CPU→GPU transfer", "  cpu_to_gpu"),
-                        ("  ├─ Classifier forward", "  clf_forward"),
-                        ("  └─ Compute r(x)", "  compute_ratio"),
-                        ("Accept / reject", "t_accept_reject"),
-                    ]
-                for label, key in labels_keys:
-                    t = p[key]
-                    ms = 1000 * t / p["n_steps"]
-                    print(f"   {label:<28} {t:>8.3f} {ms:>8.3f}")
-                print(f"   {'─' * 45}")
-                print(f"   {'TOTAL':<28} {p['t_total']:>8.3f} {p['ms_per_step']:>8.3f}")
+        result = sampler.sample_single_energy(
+            energy_gev=c,
+            n_steps=args.n_steps,
+            burn_in=args.burn_in,
+            thin=args.thin,
+            seed=args.seed,
+        )
 
-            # -- Postprocess (GPU-native) -------------------------------------------
-            sample_np = result["samples"]
-            n_samples += sample_np.shape[0]
+        # -- Postprocess (GPU-native) -------------------------------------------
+        sample_np = result["samples"]
+        
+        # if args.n_samples > 0 and n_samples >= args.n_samples:
+        #     print(f"\n   ✅ Reached target of {args.n_samples} samples, stopping early.")
+        #     break
 
-            # Move to GPU, run post-processing, bring back to CPU dict.
-            sample_t = torch.from_numpy(sample_np - cinn.width_noise).to(device)
-            c_t = c.to(device)
-            data = torch_postprocess.postprocess(
-                sample_t,
-                c_t,
-                layer_boundaries=cinn.layer_boundaries,
-                quantiles=cinn.q,
-            )
-            postprocessed = {k: v.detach().cpu().numpy() for k, v in data.items()}
-
-            if postprocessed_data is None:
-                postprocessed_data = postprocessed
-            else:
-                postprocessed_data = {
-                    key : np.concatenate([postprocessed_data[key], postprocessed[key]], axis=0)
-                    for key in postprocessed_data.keys()
-                }
-            
-            if args.n_samples > 0 and n_samples >= args.n_samples:
-                print(f"\n   ✅ Reached target of {args.n_samples} samples, stopping early.")
-                break
-
-        # -- Save --------------------------------------------------------------
-        output_path = args.output.replace(".hdf5", f"_dataloader{i}.hdf5")
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        data_util.save_data(postprocessed_data, filename=str(output_path))
-        print(f"\n💾 Saved MCMC showers → {output_path}")
+    # -- Save --------------------------------------------------------------
+    output_path = args.output
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    data_util.save_data(postprocessed_data, filename=str(output_path))
+    print(f"\n💾 Saved MCMC showers → {output_path}")
 
     # -- Save metadata -----------------------------------------------------
     import json
