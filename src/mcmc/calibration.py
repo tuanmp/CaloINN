@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.optimize import minimize_scalar
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from abc import ABC, abstractmethod
 
@@ -129,8 +130,6 @@ class BaseCalibrator(ABC):
         path = Path(path)
 
         if path.suffix == ".npz":
-            from sklearn.isotonic import IsotonicRegression
-
             data = np.load(path)
             # Forward reference — defined later in this module
             from mcmc.calibration import IsotonicCalibrator  # type: ignore[import-not-found]
@@ -296,6 +295,105 @@ class TemperatureCalibrator(BaseCalibrator):
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 2b.  Platt scaling calibrator
+# ═══════════════════════════════════════════════════════════════════════
+
+class PlattCalibrator(BaseCalibrator):
+    """Platt scaling calibration (Platt 1999).
+
+    Fits a logistic regression on validation logits::
+
+        D_cal(x) = σ(a · logit(x) + b)
+
+    At inference, ``transform_logits`` returns ``a * logits + b``, which
+    is directly usable as calibrated logits.
+
+    Parameters
+    ----------
+    a : float, optional
+        Logistic regression coefficient (slope).
+    b : float, optional
+        Logistic regression intercept.
+    """
+
+    def __init__(self, a: float | None = None, b: float | None = None):
+        self._a = a
+        self._b = b
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._a is not None and self._b is not None
+
+    @property
+    def a(self) -> float:
+        if not self.is_fitted:
+            raise RuntimeError("PlattCalibrator not fitted.")
+        return self._a
+
+    @property
+    def b(self) -> float:
+        if not self.is_fitted:
+            raise RuntimeError("PlattCalibrator not fitted.")
+        return self._b
+
+    def fit(
+        self,
+        yhat_val: np.ndarray,
+        y_val: np.ndarray,
+    ) -> "PlattCalibrator":
+        """Fit Platt scaling on validation data.
+
+        Parameters
+        ----------
+        yhat_val : np.ndarray  shape (N_val,)
+            Raw predicted probabilities on validation set.
+        y_val : np.ndarray  shape (N_val,)
+            True binary labels.
+
+        Returns
+        -------
+        self
+        """
+        logit_val = _prob_to_logit(yhat_val).reshape(-1, 1)
+
+        lr = LogisticRegression(C=np.inf, solver="lbfgs")
+        lr.fit(logit_val, y_val)
+
+        self._a = float(lr.coef_[0, 0])
+        self._b = float(lr.intercept_[0])
+        return self
+
+    def transform_logits(self, logits):
+        """Apply Platt scaling to logits: ``a * logits + b``.
+
+        Parameters
+        ----------
+        logits : np.ndarray or torch.Tensor
+            Raw classifier logits.
+
+        Returns
+        -------
+        Same type as input.
+            Calibrated logits.
+        """
+        if not self.is_fitted:
+            raise RuntimeError("PlattCalibrator not fitted. Call fit() first.")
+
+        if isinstance(logits, np.ndarray):
+            return self._a * logits + self._b
+        else:
+            # torch.Tensor
+            return self._a * logits + self._b
+
+    def save(self, path: str | Path) -> None:
+        """Save to JSON."""
+        if not self.is_fitted:
+            raise RuntimeError("PlattCalibrator not fitted.")
+        with open(path, "w") as f:
+            json.dump({"method": "platt", "a": self._a, "b": self._b}, f)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 3.  Platt scaling (alternative calibration)
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -365,7 +463,6 @@ def compare_calibration_methods(
     dict
         Method name → {"ece": float, "brier": float, "scores": np.ndarray, ...}
     """
-    from sklearn.isotonic import IsotonicRegression
     from sklearn.metrics import brier_score_loss
 
     results: dict = {}
