@@ -130,13 +130,27 @@ class BaseCalibrator(ABC):
         path = Path(path)
 
         if path.suffix == ".npz":
+            from scipy.interpolate import interp1d
+
             data = np.load(path)
+            X_thresh = data["X_thresholds"]
+            y_thresh = data["y_thresholds"]
             iso = IsotonicCalibrator()
             iso._iso_reg = IsotonicRegression(out_of_bounds="clip")
-            iso._iso_reg.X_thresholds_ = data["X_thresholds"]
-            iso._iso_reg.y_thresholds_ = data["y_thresholds"]
-            iso._X_thresholds = torch.from_numpy(data["X_thresholds"])
-            iso._y_thresholds = torch.from_numpy(data["y_thresholds"])
+            iso._iso_reg.X_thresholds_ = X_thresh
+            iso._iso_reg.y_thresholds_ = y_thresh
+            iso._iso_reg.X_min_ = float(X_thresh[0])
+            iso._iso_reg.X_max_ = float(X_thresh[-1])
+            iso._iso_reg.y_min = float(y_thresh.min())
+            iso._iso_reg.y_max = float(y_thresh.max())
+            iso._iso_reg.f_ = interp1d(
+                X_thresh, y_thresh, kind="linear",
+                bounds_error=False,
+                fill_value=(y_thresh[0], y_thresh[-1]),
+            )
+            iso._X_thresholds = torch.from_numpy(X_thresh).float()
+            iso._y_thresholds = torch.from_numpy(y_thresh).float()
+            iso._use_torch = bool(data.get("use_torch", True))
             iso._fitted = True
             return iso
 
@@ -523,7 +537,13 @@ class IsotonicCalibrator(BaseCalibrator):
             path,
             X_thresholds=self._iso_reg.X_thresholds_,
             y_thresholds=self._iso_reg.y_thresholds_,
+            use_torch=self._use_torch,
         )
+
+    @classmethod
+    def load(cls, path: str | Path) -> "IsotonicCalibrator":
+        """Load thresholds from .npz."""
+        return BaseCalibrator.load(path)
 
 
 # ═══════════════════════════════════════════════════════════════════════
