@@ -8,12 +8,18 @@ Main classes
 ------------
 - ``IMHSampler`` : Runs IMH chains with classifier-based acceptance.
 - ``ClassifierWrapper`` : Loads trained MLP classifier checkpoints.
+- ``BaseCalibrator`` : Abstract base for probability calibrators.
 - ``TemperatureCalibrator`` : Temperature scaling for calibrated density ratios.
+- ``PlattCalibrator`` : Platt scaling (logistic regression on logits).
+- ``IsotonicCalibrator`` : Isotonic regression calibration.
 - ``cinn_sample_to_classifier_input`` : Converts CINN internal representation
   to the format expected by the classifier.
 """
 
 from .calibration import (
+    BaseCalibrator,
+    IsotonicCalibrator,
+    PlattCalibrator,
     TemperatureCalibrator,
     calibrate_platt,
     compare_calibration_methods,
@@ -24,9 +30,12 @@ from .convert import cinn_sample_to_classifier_input
 from .sampler import IMHSampler
 
 __all__ = [
+    "BaseCalibrator",
     "ClassifierWrapper",
     "IMHSampler",
+    "IsotonicCalibrator",
     "MLP",
+    "PlattCalibrator",
     "TemperatureCalibrator",
     "calibrate_platt",
     "cinn_sample_to_classifier_input",
