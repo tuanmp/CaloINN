@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 from scipy.optimize import minimize_scalar
 from sklearn.linear_model import LogisticRegression
+from abc import ABC, abstractmethod
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -77,10 +78,94 @@ def expected_calibration_error(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 0.  Abstract base calibrator
+# ═══════════════════════════════════════════════════════════════════════
+
+class BaseCalibrator(ABC):
+    """Abstract base for classifier probability calibrators.
+
+    Subclasses must implement ``transform_logits``, ``save``, and a
+    ``load`` classmethod.  The unified contract is that
+    ``transform_logits`` accepts raw classifier logits and returns
+    calibrated logits such that ``sigmoid(calibrated_logits)`` gives
+    well-calibrated probabilities.
+    """
+
+    @abstractmethod
+    def transform_logits(self, logits):
+        """Convert raw logits to calibrated logits.
+
+        Parameters
+        ----------
+        logits : np.ndarray or torch.Tensor
+            Raw logits from the classifier.
+
+        Returns
+        -------
+        np.ndarray or torch.Tensor (same type as input)
+            Calibrated logits.
+        """
+        ...
+
+    @property
+    def is_fitted(self) -> bool:
+        """Return True if the calibrator has been fitted."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def save(self, path: str | Path) -> None:
+        """Save calibrator to file."""
+        ...
+
+    @classmethod
+    def load(cls, path: str | Path) -> "BaseCalibrator":
+        """Factory: load a calibrator from file, auto-detecting method.
+
+        Reads the file, inspects the ``"method"`` key (or infers
+        ``"temperature"`` for legacy files), and returns the appropriate
+        subclass instance.
+        """
+        path = Path(path)
+
+        if path.suffix == ".npz":
+            from sklearn.isotonic import IsotonicRegression
+
+            data = np.load(path)
+            # Forward reference — defined later in this module
+            from mcmc.calibration import IsotonicCalibrator  # type: ignore[import-not-found]
+
+            iso = IsotonicCalibrator()
+            iso._iso_reg = IsotonicRegression(out_of_bounds="clip")
+            iso._iso_reg.X_thresholds_ = data["X_thresholds"]
+            iso._iso_reg.y_thresholds_ = data["y_thresholds"]
+            iso._X_thresholds = torch.from_numpy(data["X_thresholds"])
+            iso._y_thresholds = torch.from_numpy(data["y_thresholds"])
+            iso._fitted = True
+            return iso
+
+        with open(path) as f:
+            data = json.load(f)
+
+        method = data.get("method", "temperature")  # legacy files have no "method" key
+        if method == "temperature":
+            return TemperatureCalibrator(T=float(data["T"]))
+        elif method == "platt":
+            # Forward reference — defined later in this module
+            from mcmc.calibration import PlattCalibrator  # type: ignore[import-not-found]
+
+            return PlattCalibrator(a=float(data["a"]), b=float(data["b"]))
+        else:
+            raise ValueError(f"Unknown calibration method: {method}")
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(fitted={self.is_fitted})"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 2.  Temperature scaling calibrator
 # ═══════════════════════════════════════════════════════════════════════
 
-class TemperatureCalibrator:
+class TemperatureCalibrator(BaseCalibrator):
     """Temperature scaling calibration (Guo et al. 2017).
 
     Learns a single temperature parameter *T* on validation data by
@@ -99,6 +184,10 @@ class TemperatureCalibrator:
 
     def __init__(self, T: float | None = None):
         self.T: float | None = T
+
+    @property
+    def is_fitted(self) -> bool:
+        return self.T is not None
 
     # ------------------------------------------------------------------
     #  Fit
@@ -198,18 +287,7 @@ class TemperatureCalibrator:
         if self.T is None:
             raise RuntimeError("Calibrator not fitted. Nothing to save.")
         with open(path, "w") as f:
-            json.dump({"T": self.T}, f)
-
-    @classmethod
-    def load(cls, path: str | Path) -> "TemperatureCalibrator":
-        """Load T from a JSON file."""
-        with open(path) as f:
-            data = json.load(f)
-        return cls(T=float(data["T"]))
-
-    def __repr__(self) -> str:
-        t_str = f"{self.T:.4f}" if self.T is not None else "unfitted"
-        return f"TemperatureCalibrator(T={t_str})"
+            json.dump({"method": "temperature", "T": self.T}, f)
 
 
 # ═══════════════════════════════════════════════════════════════════════
