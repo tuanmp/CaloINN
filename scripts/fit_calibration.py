@@ -43,6 +43,8 @@ if _PROJECT_SRC not in sys.path:
 from data.sharded_datamodule import LargeHDF5MLPDataModule
 from mcmc.calibration import (
     TemperatureCalibrator,
+    PlattCalibrator,
+    IsotonicCalibrator,
     compare_calibration_methods,
 )
 from mcmc.classifier import ClassifierWrapper
@@ -77,6 +79,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Cap on validation samples (for quick tests)",
+    )
+    parser.add_argument(
+        "--method",
+        choices=["temperature", "platt", "isotonic", "all"],
+        default="temperature",
+        help="Calibration method to save (default: temperature). "
+             "Use 'all' to save all methods to separate files.",
     )
     return parser.parse_args()
 
@@ -166,11 +175,42 @@ def main():
     results = compare_calibration_methods(yhat_fit, y_fit, yhat_eval, y_eval)
     _print_comparison(results)
 
-    # -- Save best temperature calibrator ------------------------------------
-    calib = TemperatureCalibrator()
-    calib.fit(yhat_fit, y_fit)
-    calib.save(args.output)
-    print(f"\n💾 Saved temperature calibrator (T={calib.T:.4f}) → {args.output}")
+    # -- Save calibrators based on --method ----------------------------------
+    output_base = Path(args.output)
+    saved = []
+
+    if args.method in ("temperature", "all"):
+        calib = TemperatureCalibrator()
+        calib.fit(yhat_fit, y_fit)
+        if args.method == "temperature":
+            path = output_base
+        else:
+            path = output_base.with_stem(f"{output_base.stem}_temperature")
+        calib.save(str(path))
+        saved.append(("temperature", str(path), calib.T))
+        print(f"💾 Temperature calibrator (T={calib.T:.4f}) → {path}")
+
+    if args.method in ("platt", "all"):
+        platt = PlattCalibrator()
+        platt.fit(yhat_fit, y_fit)
+        if args.method == "platt":
+            path = output_base
+        else:
+            path = output_base.with_stem(f"{output_base.stem}_platt")
+        platt.save(str(path))
+        saved.append(("platt", str(path), platt))
+        print(f"💾 Platt calibrator (a={platt.a:.3f}, b={platt.b:.3f}) → {path}")
+
+    if args.method in ("isotonic", "all"):
+        iso = IsotonicCalibrator(use_torch=True)
+        iso.fit(yhat_fit, y_fit)
+        if args.method == "isotonic":
+            path = output_base.with_suffix(".npz")
+        else:
+            path = output_base.with_stem(f"{output_base.stem}_isotonic").with_suffix(".npz")
+        iso.save(str(path))
+        saved.append(("isotonic", str(path), iso))
+        print(f"💾 Isotonic calibrator ({len(iso._X_thresholds)} thresholds) → {path}")
 
     # -- Also save comparison to a sidecar file ------------------------------
     sidecar = Path(args.output).with_suffix(".comparison.json")
