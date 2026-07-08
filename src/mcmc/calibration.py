@@ -271,12 +271,7 @@ class TemperatureCalibrator(BaseCalibrator):
         """
         if self.T is None:
             raise RuntimeError("Calibrator not fitted. Call fit() first.")
-
-        if isinstance(logits, np.ndarray):
-            return logits / self.T
-        else:
-            # torch.Tensor
-            return logits / self.T
+        return logits / self.T
 
     # ------------------------------------------------------------------
     #  Serialisation
@@ -363,7 +358,9 @@ class PlattCalibrator(BaseCalibrator):
         self._b = float(lr.intercept_[0])
         return self
 
-    def transform_logits(self, logits):
+    def transform_logits(
+        self, logits: np.ndarray | torch.Tensor
+    ) -> np.ndarray | torch.Tensor:
         """Apply Platt scaling to logits: ``a * logits + b``.
 
         Parameters
@@ -378,12 +375,7 @@ class PlattCalibrator(BaseCalibrator):
         """
         if not self.is_fitted:
             raise RuntimeError("PlattCalibrator not fitted. Call fit() first.")
-
-        if isinstance(logits, np.ndarray):
-            return self._a * logits + self._b
-        else:
-            # torch.Tensor
-            return self._a * logits + self._b
+        return self._a * logits + self._b
 
     def save(self, path: str | Path) -> None:
         """Save to JSON."""
