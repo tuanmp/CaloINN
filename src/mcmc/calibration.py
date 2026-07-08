@@ -108,9 +108,10 @@ class BaseCalibrator(ABC):
         ...
 
     @property
+    @abstractmethod
     def is_fitted(self) -> bool:
         """Return True if the calibrator has been fitted."""
-        raise NotImplementedError
+        ...
 
     @abstractmethod
     def save(self, path: str | Path) -> None:
@@ -288,6 +289,10 @@ class TemperatureCalibrator(BaseCalibrator):
             raise RuntimeError("Calibrator not fitted. Nothing to save.")
         with open(path, "w") as f:
             json.dump({"method": "temperature", "T": self.T}, f)
+
+    def __repr__(self) -> str:
+        t_str = f"{self.T:.4f}" if self.T is not None else "unfitted"
+        return f"TemperatureCalibrator(T={t_str})"
 
 
 # ═══════════════════════════════════════════════════════════════════════
