@@ -88,7 +88,13 @@ def load_cinn(ckpt_path: str, cinn_config: str, device: str, batch_size: int):
     model.eval()
     model.to(device)
 
-    return model
+    # Load datamodule for truth_format detection
+    dm_init_kw = cinn_cfg["data"]["init_args"]
+    dm_init_kw["predict_batch_size"] = batch_size
+    dm_init_kw["shuffle"] = True
+    datamodule = CaloINNDataModule(**dm_init_kw)
+    datamodule.setup()
+    return model, datamodule
 
 
 def main():
@@ -98,7 +104,7 @@ def main():
 
     # -- Load CINN ---------------------------------------------------------
     print(f"📂 Loading CINN from {args.cinn_ckpt}")
-    cinn = load_cinn(args.cinn_ckpt, args.cinn_config, device, args.batch_size)
+    cinn, cinn_dm = load_cinn(args.cinn_ckpt, args.cinn_config, device, args.batch_size)
     print(f"   ✅ Loaded — num_dim={cinn.num_dim}, device={device}")
 
     # -- Load classifier ---------------------------------------------------
@@ -151,8 +157,11 @@ def main():
         r_clip=args.r_clip,
     )
 
+    n_samples = 0
     postprocessed_data = None
     for batch in tqdm(range(0, args.n_samples, args.batch_size), desc="Batches"):
+
+        current_batch_size = min(args.batch_size, args.n_samples - n_samples)
 
         result = sampler.sample_single_energy(
             energy_gev=c,
@@ -162,18 +171,43 @@ def main():
             seed=args.seed,
         )
 
-        # -- Postprocess (GPU-native) -------------------------------------------
+        # -- Postprocess (GPU-native) ---------------------------------------
         sample_np = result["samples"]
-        
-        # if args.n_samples > 0 and n_samples >= args.n_samples:
-        #     print(f"\n   ✅ Reached target of {args.n_samples} samples, stopping early.")
-        #     break
+        energies_np = np.full((sample_np.shape[0], 1), c.item(), dtype=np.float32)
+
+        # Subtract width noise
+        samples_t = torch.from_numpy(sample_np - cinn.width_noise).to(device)
+        energies_t = torch.from_numpy(energies_np).to(device)
+
+        data = torch_postprocess.postprocess(
+            samples_t,
+            energies_t,
+            layer_boundaries=cinn.layer_boundaries,
+            quantiles=cinn.q,
+        )
+        postprocessed = {k: v.detach().cpu().numpy() for k, v in data.items()}
+
+        if postprocessed_data is None:
+            postprocessed_data = postprocessed
+        else:
+            postprocessed_data = {
+                key: np.concatenate([postprocessed_data[key], postprocessed[key]], axis=0)
+                for key in postprocessed_data.keys()
+            }
+
+        n_samples += current_batch_size
+        if args.n_samples > 0 and n_samples >= args.n_samples:
+            break
 
     # -- Save --------------------------------------------------------------
     output_path = args.output
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    data_util.save_data(postprocessed_data, filename=str(output_path))
+    truth_fmt = getattr(cinn_dm, "truth_format", None)
+    if truth_fmt is not None:
+        data_util.save_data_with_format(postprocessed_data, str(output_path), truth_fmt)
+    else:
+        data_util.save_data(postprocessed_data, filename=str(output_path))
     print(f"\n💾 Saved MCMC showers → {output_path}")
 
     # -- Save metadata -----------------------------------------------------

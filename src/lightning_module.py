@@ -1,6 +1,7 @@
 import os
 import time
 
+import h5py
 import lightning as pl
 import numpy as np
 import torch
@@ -55,14 +56,8 @@ class CaloINNLightningModule(pl.LightningModule):
         setup_data_sample_path=None,
         enable_diagnostics=False,
         actnorm_calibration_samples=1024,
-        xml_path="./binning_dataset_1_pions.xml",
-        xml_ptype="pion",
-        dataset_params={},
         cinn_params={},
         width_noise=1e-7,
-        custom_noise=False,
-        single_energy=None,
-
         optimizer_params=None,
         scheduler_params=None,
         # Phase 2: accept preprocessed data arrays directly, bypassing file read
@@ -73,6 +68,13 @@ class CaloINNLightningModule(pl.LightningModule):
         init_from_legacy_train_split=False,
         # max_samples: randomly subsample init data (matches legacy behavior)
         max_samples=None,
+        subtract_predict_noise: bool=True,
+        # XML configuration (needed for data loading and HLF)
+        xml_path=None,
+        xml_ptype=None,
+        # Data preprocessing params (used by load_init_tensors)
+        dataset_params=None,
+        custom_noise=False,
         **kwargs
     ):
         super().__init__()
@@ -87,6 +89,7 @@ class CaloINNLightningModule(pl.LightningModule):
         self.diagnostics = TrainingDiagnostics(enabled=enable_diagnostics)
 
         self.save_hyperparameters()
+        self.subtract_predict_noise = subtract_predict_noise
 
         # Phase 2: Support direct data arrays from DataModule, bypassing
         # redundant HDF5 file reads. Legacy path (via setup_data_sample_path)
@@ -99,8 +102,8 @@ class CaloINNLightningModule(pl.LightningModule):
             assert setup_data_sample_path is not None, (
                 "Must provide either setup_data_sample_path or init_data_x/init_data_c"
             )
-            assert setup_data_sample_path.endswith(".hdf5"), (
-                "setup_data_sample_path must be an .hdf5 file path"
+            assert setup_data_sample_path.endswith((".hdf5", ".h5")), (
+                "setup_data_sample_path must be an .hdf5 or .h5 file path"
             )
             sample_x, sample_c, self.layer_boundaries = self.load_init_tensors()
 
@@ -142,22 +145,45 @@ class CaloINNLightningModule(pl.LightningModule):
         self.model = CINN(self.cinn_params, sample_x, sample_c)
 
     def load_init_tensors(self):
+        path = self.hparams["setup_data_sample_path"]
+        rank_zero_info(f"Loading sample data from {path} to initialize model parameters...")
 
-        rank_zero_info(f"Loading sample data from {self.hparams['setup_data_sample_path']} to initialize model parameters...")
-        sample_data, layer_boundaries = data_util.load_data(
-            self.hparams["setup_data_sample_path"],
-            self.hparams["xml_ptype"],
-            self.hparams["xml_path"],
-        )
+        with h5py.File(path, "r") as f:
+            is_lemurs = "incident_energy" in f
 
+        if is_lemurs:
+            from src.lemurs_data import LEMURSHDF5Source
+            from src.sharded_data import _build_data_dict
+            from caloch_eval.XMLHandler import XMLHandler
+
+            xml_handler = XMLHandler(
+                particle_name=self.hparams["xml_ptype"],
+                filename=self.hparams["xml_path"],
+            )
+            layer_boundaries = np.unique(xml_handler.GetBinEdges())
+
+            source = LEMURSHDF5Source(path)
+            n = len(source)
+            showers, energies = source.read_rows(np.arange(n))
+            source.close()
+
+            sample_data = _build_data_dict(showers, energies, layer_boundaries)
+        else:
+            sample_data, layer_boundaries = data_util.load_data(
+                path,
+                self.hparams["xml_ptype"],
+                self.hparams["xml_path"],
+            )
+
+        ds_params = self.hparams.get("dataset_params") or {}
         x, c = data_util.preprocess(
             sample_data,
             layer_boundaries,
-            self.hparams["dataset_params"].get("eps", 1.0e-10),
-            u0up_cut=self.hparams["dataset_params"].get("u0up_cut", 7.0),
-            u0low_cut=self.hparams["dataset_params"].get("u0low_cut", 0.0),
-            rew=self.hparams["dataset_params"].get("pt_rew", 1.0),
-            dep_cut=self.hparams["dataset_params"].get("dep_cut", 1.0e10),
+            ds_params.get("eps", 1.0e-10),
+            u0up_cut=ds_params.get("u0up_cut", 7.0),
+            u0low_cut=ds_params.get("u0low_cut", 0.0),
+            rew=ds_params.get("pt_rew", 1.0),
+            dep_cut=ds_params.get("dep_cut", 1.0e10),
         )
 
         dtype = torch.get_default_dtype()
@@ -429,7 +455,8 @@ class CaloINNLightningModule(pl.LightningModule):
 
         samples, t = self.conditional_generate(c, measure_gen_time=True)
         # self.log("predict_gen_time", t / c.shape[0], on_step=False, on_epoch=True, prog_bar=True, batch_size=c.shape[0])
-        samples = samples - self.width_noise
+        if self.subtract_predict_noise:
+            samples = samples - self.width_noise
         samples = samples[:, 0, ...]
         data = torch_postprocess.postprocess(
             samples,
@@ -514,7 +541,11 @@ class CaloINNLightningModule(pl.LightningModule):
         data_np = {k: v.detach().cpu().numpy() for k, v in data.items()}
 
         if output_file is not None:
-            data_util.save_data(data_np, filename=output_file)
+            truth_format = getattr(self.trainer.datamodule, "truth_format", None)
+            if truth_format is not None:
+                data_util.save_data_with_format(data_np, output_file, truth_format)
+            else:
+                data_util.save_data(data_np, filename=output_file)
 
         return data_np
 
@@ -659,7 +690,11 @@ class CaloINNLightningModule(pl.LightningModule):
         )
 
         if output_file is not None:
-            data_util.save_data(data_np, filename=output_file)
+            truth_format = getattr(self.trainer.datamodule, "truth_format", None)
+            if truth_format is not None:
+                data_util.save_data_with_format(data_np, output_file, truth_format)
+            else:
+                data_util.save_data(data_np, filename=output_file)
 
         return data_np
 

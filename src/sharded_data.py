@@ -27,6 +27,7 @@ from lightning.pytorch import LightningDataModule
 from torch.utils.data import DataLoader, Dataset
 
 import data_util
+from data_util import TruthFormat
 
 # HDF5 read-cache settings — small enough for per-worker handles
 _H5_RDCC = {"rdcc_nbytes": 64 * 1024 * 1024, "rdcc_nslots": 4093}
@@ -75,6 +76,7 @@ class _RawHDF5Source:
         self._lock = threading.Lock()
         with h5py.File(self.file_path, "r") as handle:
             self._length = int(handle["showers"].shape[0])
+        self.truth_format = TruthFormat.detect_from_file(file_path)
 
     def __len__(self) -> int:
         return self._length
@@ -345,6 +347,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
         self._val_dataset = None
         self._test_dataset = None
         self.num_train_samples = 0
+        self.truth_format = None  # set during setup() from source
 
     # ------------------------------------------------------------------
     #  Split index computation (with caching)
@@ -476,6 +479,10 @@ class ShardedCaloINNDataModule(LightningDataModule):
     def setup(self, stage=None):
         train_valid = self._compute_filter_indices(self.data_path)
 
+        # Detect truth format once from the primary data file
+        if self.truth_format is None:
+            self.truth_format = TruthFormat.detect_from_file(self.data_path)
+
         # One-time shuffle before split (matching legacy)
         if self.shuffle:
             rng = np.random.RandomState(42)
@@ -574,7 +581,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
         """Clean up HDF5 handles opened by this DataModule."""
         for attr in ("_train_dataset", "_val_dataset", "_test_dataset"):
             ds = getattr(self, attr, None)
-            if ds is not None and ds.source is not None:
+            if ds is not None and hasattr(ds, 'source') and ds.source is not None:
                 ds.source.close()
 
 

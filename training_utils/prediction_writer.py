@@ -7,6 +7,8 @@ import numpy as np
 import torch
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 
+from data_util import TruthFormat
+
 
 class BaseWriter(L.pytorch.callbacks.BasePredictionWriter):
 
@@ -75,14 +77,19 @@ class PredictionWriter(BaseWriter):
         # combine batches into one hdf5 file and save to self.save_dir
         rank_zero_info("Combining batch predictions into one file...")
         if trainer.is_global_zero:
-            # combine batches into one file
+            # Get truth format from datamodule (if available)
+            dm = getattr(trainer, "datamodule", None)
+            truth_format = getattr(dm, "truth_format", None) if dm is not None else None
 
+            # combine batches into one file
             batch_dir = self.batch_dir
             batch_files = sorted(os.listdir(batch_dir))
 
             for dataloader_idx in self.all_dls:
 
                 num_predictions = 0
+                all_energies = []
+                all_showers = []
 
                 h5_file = os.path.join(self.save_dir, self.predict_output_file)
                 h5_file = h5_file.replace(".hdf5", f"_dl{dataloader_idx}.hdf5")
@@ -98,16 +105,27 @@ class PredictionWriter(BaseWriter):
                         showers = data["showers"]
 
                         if num_predictions == 0:
-                            f.create_dataset("incident_energies", data=incident_energies, maxshape=(None,1), chunks=True)
-                            f.create_dataset("showers", data=showers, maxshape=(None, *showers.shape[1:]), chunks=True)
+                            if truth_format is not None and truth_format.showers_grid_shape is not None:
+                                showers = truth_format.unflatten_showers(showers)
+                            maxshape_energy = (None, incident_energies.shape[1]) if incident_energies.ndim > 1 else (None,)
+                            maxshape_showers = (None, *showers.shape[1:])
+                            f.create_dataset(
+                                truth_format.energy_key if truth_format else "incident_energies",
+                                data=incident_energies, maxshape=maxshape_energy, chunks=True,
+                            )
+                            f.create_dataset("showers", data=showers, maxshape=maxshape_showers, chunks=True)
                         else:
-                            f["incident_energies"].resize(num_predictions + incident_energies.shape[0], axis=0)
-                            f["incident_energies"][-incident_energies.shape[0]:] = incident_energies
+                            if truth_format is not None and truth_format.showers_grid_shape is not None:
+                                showers = truth_format.unflatten_showers(showers)
+                            f["incident_energies" if truth_format is None else truth_format.energy_key].resize(
+                                num_predictions + incident_energies.shape[0], axis=0,
+                            )
+                            f["incident_energies" if truth_format is None else truth_format.energy_key][-incident_energies.shape[0]:] = incident_energies
 
                             f["showers"].resize(num_predictions + showers.shape[0], axis=0)
                             f["showers"][-showers.shape[0]:] = showers
 
                         num_predictions += incident_energies.shape[0]
-        
+
                 rank_zero_info(f"Saved {num_predictions} showers to {h5_file}")
         rank_zero_info(f"Average inference time per sample: {np.mean(self.inference_time):.6f} seconds")

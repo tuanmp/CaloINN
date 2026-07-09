@@ -237,7 +237,11 @@ def main():
         output_path = args.output.replace(".hdf5", f"_dataloader{i}.hdf5")
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        data_util.save_data(postprocessed_data, filename=str(output_path))
+        truth_fmt = getattr(cinn_dm, "truth_format", None)
+        if truth_fmt is not None:
+            data_util.save_data_with_format(postprocessed_data, str(output_path), truth_fmt)
+        else:
+            data_util.save_data(postprocessed_data, filename=str(output_path))
         print(f"\n💾 Saved MCMC showers → {output_path}")
 
     # -- Save metadata -----------------------------------------------------

@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional, Tuple
+
 import h5py
 import numpy as np
 import torch
@@ -5,6 +10,75 @@ import torch
 import caloch_eval.HighLevelFeatures as HLF
 from caloch_eval.XMLHandler import XMLHandler
 
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Truth format metadata
+# ═══════════════════════════════════════════════════════════════════════
+
+@dataclass
+class TruthFormat:
+    """Records the truth HDF5 format so generated output can mirror it.
+
+    Two known formats and their representations:
+
+    ====================  ===================  ========================
+    Trait                 CaloChallenge        LEMURS (Par04SiW)
+    ====================  ===================  ========================
+    energy_key            ``incident_energies`` ``incident_energy``
+    energy_is_1d          False (N, 1)         True (N,)
+    showers_grid_shape    None (flat)          (9, 16, 45)  (R, Phi, Z)
+    ====================  ===================  ========================
+    """
+
+    energy_key: str = "incident_energies"
+    energy_is_1d: bool = False
+    showers_grid_shape: Optional[Tuple[int, ...]] = None
+
+    @staticmethod
+    def detect_from_file(file_path: str) -> "TruthFormat":
+        """Auto-detect truth format by inspecting an HDF5 file.
+
+        Detection strategy:
+        - If ``"incident_energy"`` (singular) exists → LEMURS format
+        - Otherwise → CaloChallenge format
+        """
+        with h5py.File(file_path, "r") as handle:
+            if "incident_energy" in handle:
+                showers_ds = handle["showers"]
+                ndim = showers_ds.ndim
+                if ndim > 2:
+                    # LEMURS: (N, R, Phi, Z) — key the grid shape from dims 1+
+                    grid_shape = tuple(int(s) for s in showers_ds.shape[1:])
+                else:
+                    grid_shape = None
+                return TruthFormat(
+                    energy_key="incident_energy",
+                    energy_is_1d=True,
+                    showers_grid_shape=grid_shape,
+                )
+
+        # CaloChallenge or similar flat format
+        return TruthFormat()
+
+    def unflatten_showers(self, flat: np.ndarray) -> np.ndarray:
+        """Reshape flat showers (N, total_cells) to truth grid shape.
+
+        For LEMURS, this is the inverse of ``_transpose_and_flatten``:
+        ``flat → (N, Z, R, Phi) → transpose → (N, R, Phi, Z)``.
+        """
+        if self.showers_grid_shape is None:
+            return flat
+        R, Phi, Z = self.showers_grid_shape
+        return flat.reshape(flat.shape[0], Z, R, Phi).transpose(0, 2, 3, 1)
+
+    def format_energy(self, energy: np.ndarray) -> np.ndarray:
+        """Ensure energy has the correct shape for this format."""
+        if self.energy_is_1d:
+            return energy.reshape(-1)
+        return energy.reshape(-1, 1)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 
 def load_data_calo(filename, layer_boundaries, energy=None):
     data = {}
@@ -105,6 +179,45 @@ def save_data(data, filename):
     save_file.create_dataset('showers', data=showers)
     save_file.close()            
  
+def save_data_with_format(
+    data: dict,
+    filename: str,
+    truth_format: TruthFormat,
+    dataset_name: str = "showers",
+):
+    """Save postprocessed generator output matching the truth data format.
+
+    Like :func:`save_data` but respects the original HDF5 schema —
+    correct energy key, energy dimensionality, and shower grid shape.
+
+    Parameters
+    ----------
+    data: dict
+        Postprocessed dict with ``"energy"`` (GeV) and ``"layer_*"`` keys.
+    filename: str
+        Output HDF5 path.
+    truth_format: TruthFormat
+        Schema metadata describing how the truth file is structured.
+    dataset_name: str
+        HDF5 dataset name for showers (default ``"showers"``).
+    """
+    energy, layers = get_energy_and_sorted_layers(data)
+
+    # Convert to MeV
+    incident_energy_mev = energy * 1.e3
+    showers_mev = np.concatenate(layers, axis=1) * 1.e3
+
+    # Apply truth format
+    if truth_format.showers_grid_shape is not None:
+        showers_mev = truth_format.unflatten_showers(showers_mev)
+
+    energy_out = truth_format.format_energy(incident_energy_mev)
+
+    with h5py.File(filename, "w") as handle:
+        handle.create_dataset(truth_format.energy_key, data=energy_out)
+        handle.create_dataset(dataset_name, data=showers_mev)
+
+
 def get_energy_dims(x, c, layer_boundaries, eps=1.e-10):
     """Appends the extra dimensions and the layer energies to the conditions
     The layer energies will always be the last #layers entries, the extra dims will

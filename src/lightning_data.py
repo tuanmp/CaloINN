@@ -57,6 +57,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         self._streaming_dm = None  # delegate for streaming/sharded mode
         self.layer_boundaries = None
         self.num_train_samples = 0
+        self.truth_format = None
 
         assert predict_multiplier >= 1, "predict_multiplier must be >= 1"
         self.predict_multiplier = predict_multiplier
@@ -133,6 +134,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         self._streaming_dm.setup(stage)
         self.num_train_samples = self._streaming_dm.num_train_samples
         self.layer_boundaries = self._streaming_dm.layer_boundaries
+        self.truth_format = getattr(self._streaming_dm, "truth_format", None)
 
     def _setup_streaming(self, stage=None):
         """Phase 5: delegate to LegayStreamingDataModule for memory efficiency."""
@@ -162,6 +164,7 @@ class CaloINNDataModule(pl.LightningDataModule):
         self._streaming_dm.setup(stage)
         self.num_train_samples = self._streaming_dm.num_train_samples
         self.layer_boundaries = self._streaming_dm.layer_boundaries
+        self.truth_format = getattr(self._streaming_dm, "truth_format", None)
 
     def _setup_tensor(self, stage=None):
         dtype = torch.get_default_dtype()
