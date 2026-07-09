@@ -104,24 +104,22 @@ class PredictionWriter(BaseWriter):
                         incident_energies = data["incident_energies"]
                         showers = data["showers"]
 
-                        if num_predictions == 0:
-                            if truth_format is not None and truth_format.showers_grid_shape is not None:
+                        # Apply truth format: reshape showers + energy
+                        if truth_format is not None:
+                            if truth_format.showers_grid_shape is not None:
                                 showers = truth_format.unflatten_showers(showers)
+                            incident_energies = truth_format.format_energy(incident_energies)
+
+                        energy_key = truth_format.energy_key if truth_format else "incident_energies"
+
+                        if num_predictions == 0:
                             maxshape_energy = (None, incident_energies.shape[1]) if incident_energies.ndim > 1 else (None,)
                             maxshape_showers = (None, *showers.shape[1:])
-                            f.create_dataset(
-                                truth_format.energy_key if truth_format else "incident_energies",
-                                data=incident_energies, maxshape=maxshape_energy, chunks=True,
-                            )
+                            f.create_dataset(energy_key, data=incident_energies, maxshape=maxshape_energy, chunks=True)
                             f.create_dataset("showers", data=showers, maxshape=maxshape_showers, chunks=True)
                         else:
-                            if truth_format is not None and truth_format.showers_grid_shape is not None:
-                                showers = truth_format.unflatten_showers(showers)
-                            f["incident_energies" if truth_format is None else truth_format.energy_key].resize(
-                                num_predictions + incident_energies.shape[0], axis=0,
-                            )
-                            f["incident_energies" if truth_format is None else truth_format.energy_key][-incident_energies.shape[0]:] = incident_energies
-
+                            f[energy_key].resize(num_predictions + incident_energies.shape[0], axis=0)
+                            f[energy_key][-incident_energies.shape[0]:] = incident_energies
                             f["showers"].resize(num_predictions + showers.shape[0], axis=0)
                             f["showers"][-showers.shape[0]:] = showers
 
