@@ -20,4 +20,5 @@ dependencies = [
     "setuptools<70",
     "torch>=2.0,<3.0",
     "wandb>=0.24.2",
+    "normflows>=1.7.3",
 ]

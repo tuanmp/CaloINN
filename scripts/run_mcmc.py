@@ -29,12 +29,15 @@ import numpy as np
 import torch
 from tqdm import tqdm
 import yaml
+from importlib import import_module
 
 # Ensure src/ is on sys.path (bare imports like ``import data_util``)
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SRC_DIR = os.path.join(REPO_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 import data_util
 import torch_postprocess
@@ -93,8 +96,13 @@ def load_cinn(ckpt_path: str, cinn_config: str, device: str, batch_size: int):
     dm_init_kw = cinn_cfg["data"]["init_args"]
     dm_init_kw["predict_batch_size"] = batch_size
     dm_init_kw["shuffle"] = True
-    datamodule = CaloINNDataModule(**dm_init_kw)
-    datamodule.setup()
+    dm_init_kw["predict_multiplier"] = 1
+    dm_init_kw["cache_mode"] = "none"
+    dm_class_path = cinn_cfg["data"]["class_path"]
+    dm_module = import_module(dm_class_path.rsplit(".", 1)[0])
+    dm_class = getattr(dm_module, dm_class_path.split(".")[-1])
+    datamodule = dm_class(**dm_init_kw)
+    datamodule.setup(stage="predict")
     return model, datamodule
 
 

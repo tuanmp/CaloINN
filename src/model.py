@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from myBlocks import *
 from vblinear import VBLinear
-
+from .base import ConditionalBaseDistribution
 
 class Subnet(nn.Module):
     """ This class constructs a subnet for the coupling blocks """
@@ -453,3 +453,48 @@ class CINN(nn.Module):
         z, log_jac_det = self.forward(x, c, rev=False)
         log_prob = - 0.5*torch.sum(z**2, 1) + log_jac_det - z.shape[1]/2 * math.log(2*math.pi)
         return log_prob
+
+class _ResampleBaseCINN(CINN):
+    """ cINN model with resampling of the base distribution """
+
+    def __init__(self, params: dict, data: torch.Tensor | None, cond: torch.Tensor | None, base: ConditionalBaseDistribution):
+        """ Initializes model class.
+
+        Parameters:
+        params: Dict containing the network and training parameter
+        data: Training data to initialize the norm layer
+        cond: Conditions to the training data
+        base: The base distribution
+        """
+        super().__init__(params, data, cond)
+        self.q0 = base
+
+    def log_prob(self, x, c):
+        """
+            evaluate conditional log-likelihoods for given samples and conditions
+
+            Parameters:
+            x (tensor): Samples
+            c (tensor): Conditions
+            Returns:
+            tensor: Log-likelihoods
+        """
+        z, log_jac_det = self.forward(x, c, rev=False)
+        log_prob = self.q0.log_prob(z, context=c) + log_jac_det
+        return log_prob
+
+    def sample(self, num_pts, condition):
+        """
+            sample from the learned distribution
+
+            Parameters:
+            num_pts (int): Number of samples to generate for each given condition
+            condition (tensor): Conditions
+
+            Returns:
+            tensor[len(condition), num_pts, dims]: Samples 
+        """
+        z = self.q0.sample(num_pts, context=condition)
+        c = condition.repeat(num_pts, 1)
+        x, _ = self.forward(z, c, rev=True)
+        return x.reshape(num_pts, condition.shape[0], self.in_dim).permute(1,0,2)

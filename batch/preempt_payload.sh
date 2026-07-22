@@ -14,6 +14,9 @@ preempt_handler() {
     echo "[$(date +%H:%M:%S)] Forwarding to child PID ${1}..."
     kill -TERM "${1}" 2>/dev/null
     echo "[$(date +%H:%M:%S)] --requeue will auto-requeue"
+    scontrol requeue "${SLURM_JOB_ID}" 
+    # catch error from scontrol requeue (e.g., if job is already requeued) and continue
+    echo "[$(date +%H:%M:%S)] requeue rc=$?"
 }
 
 timeout_handler() {
@@ -22,6 +25,7 @@ timeout_handler() {
     kill -TERM "${1}" 2>/dev/null
     echo "[$(date +%H:%M:%S)] Calling scontrol requeue ${SLURM_JOB_ID}..."
     scontrol requeue "${SLURM_JOB_ID}"
+    # catch error from scontrol requeue (e.g., if job is already requeued) and continue
     echo "[$(date +%H:%M:%S)] requeue rc=$?"
 }
 

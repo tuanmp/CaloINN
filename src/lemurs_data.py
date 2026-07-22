@@ -265,23 +265,23 @@ class LEMURSDataModule(ShardedCaloINNDataModule):
             source.close()
 
     def setup(self, stage=None):
-        train_valid = self._compute_filter_indices(self.data_path)
 
         # Detect truth format once from the primary data file
         if self.truth_format is None:
             self.truth_format = TruthFormat.detect_from_file(self.data_path)
 
-        if self.shuffle:
-            rng = np.random.RandomState(42)
-            train_valid = train_valid[rng.permutation(len(train_valid))]
-
-        n_total = len(train_valid)
-        n_val = int(n_total * self.val_frac)
-        n_train = n_total - n_val
-
-        self.num_train_samples = n_train
-
         if stage in (None, "fit"):
+            train_valid = self._compute_filter_indices(self.data_path)
+
+            if self.shuffle:
+                rng = np.random.RandomState(42)
+                train_valid = train_valid[rng.permutation(len(train_valid))]
+
+            n_total = len(train_valid)
+            n_val = int(n_total * self.val_frac)
+            n_train = n_total - n_val
+
+            self.num_train_samples = n_train
             if self.cache_mode == "memmap" and self._cache_exists("train"):
                 self._train_dataset = _MemmapDataset(
                     self._cache_path("train"),
@@ -317,6 +317,8 @@ class LEMURSDataModule(ShardedCaloINNDataModule):
                     source.close()
 
         if stage in (None, "test", "predict"):
+        
+            print(f"📦 Building test/predict dataset from {self.val_data_path}...")
             val_valid = self._compute_filter_indices(self.val_data_path)
             val_source = LEMURSHDF5Source(self.val_data_path)
             self._test_dataset = _CaloINNDataset(

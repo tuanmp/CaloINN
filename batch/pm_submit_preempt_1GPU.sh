@@ -26,8 +26,8 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=64G
-#SBATCH --time=48:00:00
-#SBATCH --signal=USR1@300
+#SBATCH --time=8:00:00
+#SBATCH --signal=SIGTERM@300
 #SBATCH --requeue
 #SBATCH --open-mode=append
 #SBATCH --gpu-bind=none

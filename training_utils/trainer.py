@@ -3,7 +3,8 @@ from datetime import datetime
 
 import lightning as L
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
-
+from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
+from pathlib import Path
 
 def get_default_root_dir(stage_dir):
     if (
@@ -41,6 +42,7 @@ class Trainer(L.Trainer):
                 rank_zero_info(f"Loading checkpoint from slurm job id {from_slurm_id} at {default_root_dir}")
         else:
             rank_zero_info(f"Setting default root dir: {default_root_dir}")
+            
 
         super().__init__(
             default_root_dir=default_root_dir,
@@ -48,3 +50,11 @@ class Trainer(L.Trainer):
         )
 
         self.run_name = run_name
+    
+    def fit(self, model: L.LightningModule, train_dataloaders: L.LightningDataModule | None = None, val_dataloaders: None = None, datamodule: L.LightningDataModule | None = None, ckpt_path: str | Path | None = None, weights_only: bool | None = None) -> None:
+        # if the job is requeued, change the checkpoint priority from the provided ckpt if any to the last HPC checkpoint in the default_root_dir
+        if os.path.exists(self.default_root_dir) and [ckpt for ckpt in os.listdir(self.default_root_dir) if ckpt.startswith("hpc_ckpt")] and ckpt_path is not None:
+            rank_zero_info(f"Checkpoint directory {self.default_root_dir} has HPC checkpoints, changing priority from \n   {ckpt_path} \n   to the last HPC ckpt")
+            ckpt_path = 'hpc'
+        
+        return super().fit(model, train_dataloaders, val_dataloaders, datamodule, ckpt_path, weights_only)

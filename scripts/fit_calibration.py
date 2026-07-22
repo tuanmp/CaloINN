@@ -28,6 +28,7 @@ import numpy as np
 import torch
 import yaml
 from tqdm import tqdm
+from importlib import import_module
 
 # Ensure caloxtreme_clf is importable
 _CALOXTREME_ROOT = "/global/cfs/cdirs/m3443/usr/pmtuan/caloxtreme_clf"
@@ -153,7 +154,10 @@ def main():
     # -- Build validation dataloader -----------------------------------------
     print("📦 Building validation dataloader...")
     dm_kwargs = dict(config["data"]["init_args"])
-    datamodule = LargeHDF5MLPDataModule(**dm_kwargs)
+    dm_path = config["data"]["class_path"]
+    dm_module = import_module(dm_path.rsplit(".", 1)[0])
+    dm_class = getattr(dm_module, dm_path.split(".")[-1])
+    datamodule = dm_class(**dm_kwargs)
     datamodule.setup("fit")
     val_loader = datamodule.val_dataloader()
     print(f"   📊 Validation batches: {len(val_loader)}")

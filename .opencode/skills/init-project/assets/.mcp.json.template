@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "jlab-mcp": {
+      "command": "jlab-mcp",
+      "env": {
+        "JLAB_MCP_SLURM_PARTITION": "{{PARTITION}}",
+        "JLAB_MCP_SLURM_GRES": "{{GPU_GRES}}",
+        "JLAB_MCP_SLURM_CPUS": "{{CPUS_PER_TASK}}",
+        "JLAB_MCP_SLURM_MEM": "{{MEM_MB}}",
+        "JLAB_MCP_SLURM_TIME": "{{TIME}}",
+        "JLAB_MCP_SLURM_MODULES": "{{CUDA_MODULE}}"
+      }
+    }
+  }
+}

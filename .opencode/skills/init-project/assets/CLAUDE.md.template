@@ -1,0 +1,52 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code when working with code in this repository.
+
+## Project Overview
+
+<!-- TODO: Describe the research question, models, and datasets -->
+
+## Environment
+
+- **Package manager**: UV (`uv sync` to install, `uv run` to execute)
+- **Python**: 3.12
+- **Key deps**: <!-- TODO: list key dependencies -->
+- **GPU required**: <!-- TODO: yes/no and what for -->
+
+## Repository Structure
+
+All interactive Jupyter notebook work lives in `./notebooks/`.
+
+This is a notebook-based research project. Test ideas or hypotheses in `./notebooks/` using Jupyter notebooks. When the project grows to require multiple notebooks or substantial code, refactor frequently used functions or classes into `./src/{{PACKAGE_NAME}}/`.
+
+You can import the package with `import {{PACKAGE_NAME}}` (see pyproject.toml).
+
+## External Resources
+
+<!-- TODO: List HuggingFace models, datasets, or other external resources -->
+
+## Known Errors and Gotchas
+
+### Notebook Execution Policy
+- **Stop on error**: When running notebook cells sequentially, if a cell produces an error, STOP immediately. Do NOT skip it and continue to the next cell. Instead, diagnose the error, fix the cell using `mcp__jlab-mcp__edit_cell`, and re-execute it before proceeding.
+
+### Remote Jupyter Environment (jlab-mcp)
+- **Session workflow**: Use `mcp__jlab-mcp__start_new_session` to create a session (starts kernel + creates notebook). Execute code with `mcp__jlab-mcp__execute_code`. When starting a new notebook, use `mcp__jlab-mcp__shutdown_session` to close the current session first. Do NOT automatically shut down the session after finishing work — the user may want to continue experiments on the same notebook. To resume a previous notebook, use `mcp__jlab-mcp__start_session_resume_notebook`.
+- **Shared filesystem**: The Jupyter kernel and the local Bash tool share the same filesystem. Files created by `mcp__jlab-mcp__execute_code` or `savefig()` in notebook cells are immediately visible via Bash, Glob, Read, etc. Do NOT treat them as separate filesystems — there is no need to use `execute_code` for file operations that Bash or other local tools can handle.
+- The notebook is managed via **jlab-mcp**. Use `mcp__jlab-mcp__*` tools for all notebook operations (`start_new_session`, `execute_code`, `edit_cell`, `add_markdown`, `execute_scratch`, `shutdown_session`, etc.).
+- The Jupyter kernel runs on a **remote compute node**, not on the local machine. Bash tool commands run locally and cannot see or kill remote processes. To manage **GPU processes** (e.g., `nvidia-smi`, `kill`, `os.kill`), always use `mcp__jlab-mcp__execute_scratch` so the command runs on the same node as the GPU. For **file operations** (mkdir, mv, ls, etc.), either Bash or `execute_code` works — they see the same files.
+- **Single GPU process rule**: Before every `shutdown_session` + restart cycle, first check GPU processes via `mcp__jlab-mcp__execute_scratch` with `nvidia-smi --query-compute-apps=pid --format=csv,noheader`, identify the current kernel PID (`os.getpid()`), and `os.kill(pid, signal.SIGKILL)` all *other* GPU processes. After restart, verify only one process is using the GPU. Stale kernels leak GPU memory and will eventually cause OOM.
+- If the kernel crashes from OOM, use `mcp__jlab-mcp__shutdown_session` followed by `mcp__jlab-mcp__start_session_resume_notebook` to get a fresh kernel with notebook state restored.
+
+### Matplotlib / Plotting
+- **savefig paths**: Save all figures to `./attachements/`. Use `from {{PACKAGE_NAME}}.plotting import save_and_show`.
+- All saved figure filenames should use the notebook filename as a prefix and include a number starting from 00 (e.g., `01_experiment_00_fig_desc.png`).
+
+## Experiment Workflow
+
+When creating a new experiment notebook:
+
+1. **Start session** with `mcp__jlab-mcp__start_new_session` using a descriptive experiment name. This creates the notebook in `./notebooks/` following the naming convention `NN_short_description.ipynb`.
+2. **Figures**: Save via the project's plotting utility to `attachements/` with the `NN_desc_XX_fig_desc.png` naming convention.
+3. **Run all cells** sequentially, fixing errors before proceeding (see Notebook Execution Policy).
+4. **Generate report**: Use `/report NN_short_description` to create a dated report in `research_notes/YYYY-MM-DD-HHMMSS_experiment_title.md` with embedded figures and key results tables.

@@ -312,6 +312,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
         cache_mode: str = "none",
         cache_dir: str = "",
         cache_chunk: int = 1024,
+        predict_multiplier: int = 1,
         **kwargs,
     ):
         super().__init__()
@@ -348,6 +349,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
         self._test_dataset = None
         self.num_train_samples = 0
         self.truth_format = None  # set during setup() from source
+        self.predict_multiplier = predict_multiplier
 
     # ------------------------------------------------------------------
     #  Split index computation (with caching)
@@ -531,6 +533,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
                     source.close()  # no longer needed after caching
 
         if stage in (None, "test", "predict"):
+            print(f"📦 Building test/predict dataset from {self.val_data_path}...")
             val_valid = self._compute_filter_indices(self.val_data_path)
             val_source = _RawHDF5Source(self.val_data_path)
             self._test_dataset = _CaloINNDataset(
@@ -570,12 +573,21 @@ class ShardedCaloINNDataModule(LightningDataModule):
         return DataLoader(
             self._test_dataset,
             batch_size=self.predict_batch_size,
-            shuffle=self.shuffle,
+            shuffle=False,
             num_workers=self.num_workers,
         )
 
     def predict_dataloader(self):
-        return self.test_dataloader()
+
+        assert self._test_dataset is not None, (
+            "Call setup('predict') before requesting predict_dataloader"
+        )
+        return [DataLoader(
+            self._test_dataset,
+            batch_size=self.predict_batch_size,
+            shuffle=False,
+            num_workers=0,
+        ) for _ in range(self.predict_multiplier)]
 
     def teardown(self, stage=None):
         """Clean up HDF5 handles opened by this DataModule."""

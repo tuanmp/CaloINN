@@ -15,6 +15,7 @@
       "./pyproject.toml": "allow"
     },
     "bash": {
+      "*": "allow",
       "HDF5_USE_FILE_LOCKING=FALSE uv *": "allow",
       "uv run *": "allow",
       "uv *": "allow",
@@ -29,7 +30,8 @@
       "mkdir *": "allow",
       "cp *": "allow",
       "mv *": "allow",
-      "rm *": "allow",
+      "rm *": "ask",
+      "git rm": "ask",
       "touch *": "allow",
       "chmod *": "allow",
       "python *": "allow",

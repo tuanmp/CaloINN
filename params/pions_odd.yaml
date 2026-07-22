@@ -25,10 +25,12 @@ trainer:
         save_top_k: 3
         filename: "{epoch}-{val_loss:.2f}"
         save_last: true
+        save_on_exception: true
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
         every_n_epochs: 50          # matches legacy save_interval: 50
         save_top_k: -1              # keep all periodic checkpoints
+        save_on_exception: true
         filename: "epoch{epoch:04d}"
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
