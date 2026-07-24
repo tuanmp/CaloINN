@@ -107,3 +107,7 @@ class ActNormWarmupCallback(L.Callback):
             f"batch_size={int(x.shape[0])}, seed={self.deterministic_seed}"
         )
         self._done = True
+
+        if hasattr(pl_module, "_actnorm_calib_x"):
+            pl_module._actnorm_calib_x = None
+            pl_module._actnorm_calib_c = None

@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from myBlocks import *
 from vblinear import VBLinear
-from .base import ConditionalBaseDistribution
+from base import ConditionalBaseDistribution
 
 class Subnet(nn.Module):
     """ This class constructs a subnet for the coupling blocks """

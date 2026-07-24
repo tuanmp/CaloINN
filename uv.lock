@@ -338,6 +338,7 @@ dependencies = [
     { name = "jupyter" },
     { name = "lightning" },
     { name = "matplotlib" },
+    { name = "normflows" },
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "pandas", version = "3.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "particle" },
@@ -360,6 +361,7 @@ requires-dist = [
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "lightning", specifier = "==2.6.1" },
     { name = "matplotlib", specifier = ">=3.7.5" },
+    { name = "normflows", specifier = ">=1.7.3" },
     { name = "pandas", specifier = ">=2.0.3" },
     { name = "particle", specifier = ">=0.25.4" },
     { name = "pyyaml", specifier = ">=6.0.1" },
@@ -2302,6 +2304,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/6a/51/63fe664f3908c97be
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9e/c9/b2622292ea83fbb4ec318f5b9ab867d0a28ab43c5717bb85b0a5f6b3b0a4/networkx-3.6.1-py3-none-any.whl", hash = "sha256:d47fbf302e7d9cbbb9e2555a0d267983d2aa476bac30e90dfbe5669bd57f3762", size = 2068504, upload-time = "2025-12-08T17:02:38.159Z" },
 ]
+
+[[package]]
+name = "normflows"
+version = "1.7.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c5/68/3148519079d49392e411bdae3e1e6d3eecd2d284e9b3c90861d70c646157/normflows-1.7.3.tar.gz", hash = "sha256:0cc539869c9970d28041edb4d7a28006c1cec6241d9d0d553975b5b1155c2071", size = 65317, upload-time = "2023-11-16T14:18:22.689Z" }
 
 [[package]]
 name = "notebook"

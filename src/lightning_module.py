@@ -55,7 +55,8 @@ class CaloINNLightningModule(pl.LightningModule):
         self,
         setup_data_sample_path=None,
         enable_diagnostics=False,
-        actnorm_calibration_samples=1024,
+        max_init_samples=10000,
+        shuffle_init_batch=True,
         cinn_params={},
         width_noise=1e-7,
         optimizer_params=None,
@@ -66,8 +67,8 @@ class CaloINNLightningModule(pl.LightningModule):
         init_layer_boundaries=None,
         init_num_train_samples=None,
         init_from_legacy_train_split=False,
-        # max_samples: randomly subsample init data (matches legacy behavior)
         max_samples=None,
+        actnorm_calibration_samples=None,
         subtract_predict_noise: bool=True,
         # XML configuration (needed for data loading and HLF)
         xml_path=None,
@@ -78,6 +79,11 @@ class CaloINNLightningModule(pl.LightningModule):
         **kwargs
     ):
         super().__init__()
+
+        if max_samples is not None:
+            max_init_samples = max_samples
+        if actnorm_calibration_samples is None:
+            actnorm_calibration_samples = max_init_samples
 
         self.cinn_params = cinn_params
         self.optimizer_params = dict(optimizer_params or {})
@@ -109,31 +115,24 @@ class CaloINNLightningModule(pl.LightningModule):
 
         self.num_dim = int(sample_x.shape[1])
 
-        # Phase 2b: max_samples — randomly subsample init data to match
+        # max_init_samples — randomly subsample init data to match
         # legacy behavior where only max_samples are used for CINN
-        # initialization (trainer.py lines 62-64).  The full dataset
-        # count is preserved in num_train_samples for KL scaling.
+        # initialization (trainer.py lines 62-64).  When load_init_tensors
+        # already returns exactly max_init_samples rows (LEMURS path), this
+        # block is a no-op.  It remains active for CaloChallenge paths that
+        # still load the full dataset.
         n_full_init = int(sample_x.shape[0])
-        if max_samples is not None and max_samples > 0 and max_samples < n_full_init:
+        if max_init_samples is not None and max_init_samples > 0 and max_init_samples < n_full_init:
             torch.manual_seed(42)  # deterministic subsample (legacy uses randperm)
-            rand_idx = torch.randperm(n_full_init)[: int(max_samples)]
+            rand_idx = torch.randperm(n_full_init)[: int(max_init_samples)]
             sample_x = sample_x[rand_idx]
             sample_c = sample_c[rand_idx]
 
         n_calib = min(int(actnorm_calibration_samples), int(sample_x.shape[0]))
-        self._actnorm_calib_x = sample_x[:n_calib].detach().clone()
-        self._actnorm_calib_c = sample_c[:n_calib].detach().clone()
+        self._actnorm_calib_x = sample_x[:n_calib].detach()
+        self._actnorm_calib_c = sample_c[:n_calib].detach()
 
-        # Phase 2: num_train_samples is now set from actual data or override.
-        # It will be updated by setup() when the datamodule is attached.
-        # For bayesian models, the correct value is critical (KL scaling).
-        if init_num_train_samples is not None:
-            self.num_train_samples = int(init_num_train_samples)
-        else:
-            # Use full dataset size for KL scaling (n_full_init preserved
-            # before max_samples subsampling, matching legacy behavior where
-            # N = len(train_loader.data) is the full count).
-            self.num_train_samples = max(1, n_full_init)
+        self.num_train_samples = max(1, n_full_init)
 
         if self.hparams["custom_noise"]:
             q = self.eval_quantiles(torch.clone(sample_x))
@@ -146,6 +145,8 @@ class CaloINNLightningModule(pl.LightningModule):
 
     def load_init_tensors(self):
         path = self.hparams["setup_data_sample_path"]
+        max_init = self.hparams.get("max_init_samples", 10000)
+        shuffle = self.hparams.get("shuffle_init_batch", True)
         rank_zero_info(f"Loading sample data from {path} to initialize model parameters...")
 
         with h5py.File(path, "r") as f:
@@ -164,7 +165,13 @@ class CaloINNLightningModule(pl.LightningModule):
 
             source = LEMURSHDF5Source(path)
             n = len(source)
-            showers, energies = source.read_rows(np.arange(n))
+            n_sample = min(max_init, n)
+            if shuffle:
+                rng = np.random.RandomState(42)
+                idx = rng.choice(n, size=n_sample, replace=False)
+            else:
+                idx = np.arange(n_sample)
+            showers, energies = source.read_rows(idx)
             source.close()
 
             sample_data = _build_data_dict(showers, energies, layer_boundaries)
