@@ -1,0 +1,120 @@
+# CaloINN Lightning — LEMURS FCCeeALLEGRO gamma training config
+# Run: uv run python main.py fit --config params/lemurs_fcceeallegro.yaml
+#
+# Dataset: 900k gamma showers, 1–100 GeV, ALLEGRO detector
+# Dims: 6480 cells + 45 layers = 6525
+
+trainer:
+  stage_dir: /workdir/phamt/stage_dir/results
+  run_name: lemurs_fcceeallegro_full
+  accelerator: auto
+  devices: 1
+  max_epochs: 500
+  precision: 32
+  logger:
+    - class_path: training_utils.wandb.WandbLogger
+      init_args:
+        stage_dir: /workdir/phamt/stage_dir/results
+        project: caloinn_lightning
+        group: lemurs_fcceeallegro
+  callbacks:
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        monitor: val_loss
+        mode: min
+        save_top_k: 3
+        filename: "{epoch}-{val_loss:.2f}"
+        save_last: true
+        save_on_exception: true
+        verbose: true
+    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
+      init_args:
+        every_n_epochs: 50
+        save_top_k: -1
+        filename: "epoch{epoch:04d}"
+    - class_path: lightning.pytorch.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: training_utils.actnorm_warmup.ActNormWarmupCallback
+      init_args:
+        enabled: true
+        num_samples: 5000
+        deterministic_seed: 2026
+        disable_batchnorm_updates: true
+        calibration_source: module_cache
+
+data:
+  class_path: src.lemurs_data.LEMURSDataModule
+  init_args:
+    data_path: /workdir/phamt/lemurs/fcceeallegro/LEMURS_FCCeeALLEGRO_training.h5
+    val_data_path: /workdir/phamt/lemurs/fcceeallegro/testing/LEMURS_FCCeeALLEGRO_gamma_100kEvents_1GeV100GeV_GPSflat_part10.h5
+    batch_size: 512
+    xml_path: binning_lemurs_fcceeallegro.xml
+    xml_ptype: photon
+    val_frac: 0.01
+    eps: 1.0e-10
+    u0up_cut: 7.0
+    u0low_cut: 0.0
+    rew: 1.0
+    dep_cut: 1.0e10
+    width_noise: 5.0e-6
+    fixed_noise: false
+    shuffle: false
+    num_workers: 8
+    predict_batch_size: 1000
+    eval_dataset: "1-photons"
+    cache_mode: none
+    cache_dir: /workdir/phamt/lemurs/fcceeallegro_cache
+    cache_chunk: 100000
+
+model:
+  setup_data_sample_path: /workdir/phamt/lemurs/fcceeallegro/LEMURS_FCCeeALLEGRO_training.h5
+  max_init_samples: 5000
+  shuffle_init_batch: false
+  width_noise: 5.0e-6
+  custom_noise: false
+  xml_path: binning_lemurs_fcceeallegro.xml
+  xml_ptype: photon
+  enable_diagnostics: false
+  dataset_params:
+    xml_ptype: photon
+    eps: 1.0e-10
+    u0up_cut: 7.0
+    u0low_cut: 0.0
+    pt_rew: 1.0
+    dep_cut: 1.0e10
+    eval_dataset: "1-photons"
+  optimizer_params:
+    lr: 0.00001
+    betas: [0.9, 0.999]
+    eps: 1.0e-10
+    weight_decay: 0.01
+  scheduler_params:
+    lr_scheduler: one_cycle_lr
+    max_lr: 0.0001
+    epochs: 500
+    steps_per_epoch: 1739
+  cinn_params:
+    bayesian: false
+    alpha: 1.0e-8
+    alpha_logit: 1.0e-6
+    use_extra_dims: true
+    use_norm: false
+    log_cond: true
+    layers_per_block: 4
+    internal_size: 256
+    n_blocks: 12
+    # internal_size: 16
+    # n_blocks: 3
+    coupling_type: rational_quadratic
+    dropout: 0.0
+    layer_norm: nn.BatchNorm1d
+    layer_act: nn.SiLU
+    num_bins: 10
+    bounds_init: 18
+    permute_soft: false
+    permute_layer: false
+    std_init: -15.0
+    prior_prec: 5000
+    sub_layers: [linear, linear, linear, linear]
+    norm: true
