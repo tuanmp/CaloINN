@@ -14,8 +14,8 @@ SRC_DIR = os.path.join(REPO_ROOT, "src")
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from lightning_data import CaloINNDataModule
-from lightning_module import CaloINNLightningModule
+# from lightning_data import CaloINNDataModule
+# from lightning_module import CaloINNLightningModule
 
 try:
     from lightning.pytorch.cli import LightningCLI
@@ -27,7 +27,6 @@ from training_utils.trainer import Trainer
 
 def main():
     LightningCLI(
-        model_class=CaloINNLightningModule,
         trainer_class=Trainer,
         auto_configure_optimizers=False,
         trainer_defaults={"num_sanity_val_steps": 0},

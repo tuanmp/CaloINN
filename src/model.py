@@ -196,7 +196,6 @@ class CINN(nn.Module):
 
         self.initialize_normalization(data, cond)
         self.define_model_architecture(self.num_dim)
-        # print(self.model)
 
     def forward(self, x, c, rev=False, jac=True):
         if self.log_cond:
@@ -321,7 +320,7 @@ class CINN(nn.Module):
 
     def initialize_normalization(self, data, cond):
         """ Calculates the normalization transformation from the training data and stores it. """
-        data = torch.clone(data)
+        # data = torch.clone(data)
         if self.use_norm:
             data /= cond
         data = torch.log(data + self.alpha)

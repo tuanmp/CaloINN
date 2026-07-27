@@ -12,6 +12,15 @@ import torch_postprocess
 from model import CINN
 from training_diagnostics import TrainingDiagnostics
 
+from clf.classifier import MLP
+import torch_postprocess
+from mcmc.convert import cinn_sample_to_classifier_input, cinn_sample_to_classifier_input_torch
+from sklearn.metrics import brier_score_loss
+from torchmetrics import AUROC, MetricCollection
+from mcmc.calibration import expected_calibration_error
+from collections.abc import Mapping
+from typing import Any, Optional, Union, Tuple, Dict
+from functools import partial
 
 class _SkipLastTwoScheduler:
     """Wrapper that skips the last 2 scheduler.step() calls, matching legacy.
@@ -93,6 +102,10 @@ class CaloINNLightningModule(pl.LightningModule):
         self._run_batch_diagnostics = False
         self._diag_batch_idx = -1
         self.diagnostics = TrainingDiagnostics(enabled=enable_diagnostics)
+        self.xml_path = xml_path
+        self.xml_ptype = xml_ptype
+        self.setup_data_sample_path = setup_data_sample_path
+        self.custom_noise = custom_noise
 
         self.save_hyperparameters()
         self.subtract_predict_noise = subtract_predict_noise
@@ -112,7 +125,6 @@ class CaloINNLightningModule(pl.LightningModule):
                 "setup_data_sample_path must be an .hdf5 or .h5 file path"
             )
             sample_x, sample_c, self.layer_boundaries = self.load_init_tensors()
-
         self.num_dim = int(sample_x.shape[1])
 
         # max_init_samples — randomly subsample init data to match
@@ -134,7 +146,7 @@ class CaloINNLightningModule(pl.LightningModule):
 
         self.num_train_samples = max(1, n_full_init)
 
-        if self.hparams["custom_noise"]:
+        if self.custom_noise:
             q = self.eval_quantiles(torch.clone(sample_x))
         else:
             q = torch.tensor(self.width_noise, dtype=sample_x.dtype)
@@ -144,7 +156,8 @@ class CaloINNLightningModule(pl.LightningModule):
         self.model = CINN(self.cinn_params, sample_x, sample_c)
 
     def load_init_tensors(self):
-        path = self.hparams["setup_data_sample_path"]
+
+        path = self.setup_data_sample_path
         max_init = self.hparams.get("max_init_samples", 10000)
         shuffle = self.hparams.get("shuffle_init_batch", True)
         rank_zero_info(f"Loading sample data from {path} to initialize model parameters...")
@@ -158,8 +171,8 @@ class CaloINNLightningModule(pl.LightningModule):
             from caloch_eval.XMLHandler import XMLHandler
 
             xml_handler = XMLHandler(
-                particle_name=self.hparams["xml_ptype"],
-                filename=self.hparams["xml_path"],
+                particle_name=self.xml_ptype,
+                filename=self.xml_path,
             )
             layer_boundaries = np.unique(xml_handler.GetBinEdges())
 
@@ -178,8 +191,8 @@ class CaloINNLightningModule(pl.LightningModule):
         else:
             sample_data, layer_boundaries = data_util.load_data(
                 path,
-                self.hparams["xml_ptype"],
-                self.hparams["xml_path"],
+                self.xml_ptype,
+                self.xml_path,
             )
 
         ds_params = self.hparams.get("dataset_params") or {}
@@ -874,3 +887,198 @@ class CaloINNLightningModule(pl.LightningModule):
             data_util.save_data(data, filename=output_file)
 
         return data
+
+class CaloINNCLF(pl.LightningModule):
+    """CaloINN with classifier density ratio correction.
+
+    This class extends CaloINNLightningModule to include a classifier
+    for density ratio estimation, enabling Acceptance-Rejection sampling.
+    The class loads a pre-trained CaloINN model and adds a Multi-Layer Perceptron (MLP)
+    """
+
+    def __init__(self, 
+        hidden_dim: int=256,
+        num_layers: int=4,
+        batch_norm: bool=False,
+        layer_norm: bool=True,
+        output_dim: int=1,
+        dropout: float=0.,
+        activation: str="relu",
+        generator_ckpt_path: str=None,
+        voxel_energy_cutoff: float=None,
+        log_transform: bool=False,
+        lr: float=1e-3,
+        step_size: int=10,
+        gamma: float=0.95,
+        amsgrad: bool=True,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        if generator_ckpt_path is None:
+            raise ValueError("generator_ckpt_path must be provided for CaloINNCLF.")
+        rank_zero_info(f"🔄 Loading generator from {generator_ckpt_path}")
+        # ckpt = torch.load(generator_ckpt_path, map_location="cpu")
+        # self.generator = CaloINNLightningModule(**ckpt["hyper_parameters"])
+        # self.generator.load_state_dict(ckpt["state_dict"])
+        self.generator = CaloINNLightningModule.load_from_checkpoint(generator_ckpt_path)
+        rank_zero_info(f"   ✅ Generator loaded. Model has {sum(p.numel() for p in self.generator.parameters())} parameters.")
+        self.net = MLP(
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            batch_norm=batch_norm,
+            layer_norm=layer_norm,
+            output_dim=output_dim,
+            dropout=dropout,
+            activation=activation
+        )
+
+        self.convert_func = partial(
+            cinn_sample_to_classifier_input_torch,
+            layer_boundaries=self.generator.layer_boundaries,
+            q=self.generator.q,
+            width_noise=self.generator.width_noise,
+            xml_path=self.generator.xml_path,
+            particle=self.generator.xml_ptype,
+            log_transform=log_transform,
+            voxel_energy_cutoff=voxel_energy_cutoff
+        )
+
+        self.metrics = MetricCollection({
+            "auroc": AUROC(task="binary")
+        })
+
+        # Accumulators for epoch-level Brier / ECE (not batch-level)
+        self._val_y_hat: list = []
+        self._val_y: list = []
+        self._test_y_hat: list = []
+        self._test_y: list = []
+
+        self.lr = lr
+        self.step_size = step_size
+        self.gamma = gamma
+        self.amsgrad = amsgrad
+
+        self.save_hyperparameters(ignore=["generator", "net", "convert_func", "metrics", "_val_y_hat", "_val_y", "_test_y_hat", "_test_y"])
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.net.parameters(),
+            lr=self.lr,
+            amsgrad=self.amsgrad,
+        )
+        scheduler = torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=self.step_size,
+            gamma=self.gamma
+        )
+        return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler}}
+
+    def forward(self, x: torch.Tensor):
+        return self.net(x)
+    
+    def get_input_from_batch(self, batch):
+
+        x_truth, c = batch
+        x_gen = self.generator.conditional_generate(c, measure_gen_time=False).squeeze(1)
+
+        y_truth = torch.ones(x_truth.shape[0], 1, device=x_truth.device)
+        y_gen = torch.zeros(x_gen.shape[0], 1, device=x_gen.device)
+
+        X = torch.cat([x_truth, x_gen], dim=0)
+        y = torch.cat([y_truth, y_gen], dim=0)
+        c = c.repeat(2, 1)
+
+        X_input = self.convert_func(X, c)
+
+        return X_input, y
+    
+    def criterion(self, logits, y):
+        return torch.nn.functional.binary_cross_entropy_with_logits(logits, y)
+    
+    def training_step(self, batch, batch_idx):
+        X_input, y = self.get_input_from_batch(batch)
+        logits = self(X_input)
+        loss = self.criterion(logits, y)
+        return {"loss": loss}
+
+    def on_train_batch_end(self, outputs, batch, batch_idx: int) -> None:
+        self.log('train_loss', outputs["loss"], on_step=True, on_epoch=True, prog_bar=True, logger=True)
+    
+    
+    def validation_step(self, batch, batch_idx):
+        X_input, y = self.get_input_from_batch(batch)
+        logits = self(X_input)
+        loss = self.criterion(logits, y)
+        return {
+            "loss": loss,
+            "y_hat": logits,
+            "y": y
+        }
+    
+    def on_validation_batch_end(self, outputs, batch, batch_idx: int, dataloader_idx: int = 0) -> None:
+        y_hat = outputs["y_hat"]
+        y = outputs["y"]
+        self.log('val_loss', outputs["loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.metrics['auroc'].update(y_hat, y)
+        # Accumulate for epoch-level Brier/ECE (not computed per batch)
+        self._val_y_hat.append(torch.sigmoid(y_hat).detach().cpu().numpy().flatten())
+        self._val_y.append(y.detach().cpu().numpy().flatten())
+
+    def on_validation_epoch_end(self) -> None:
+        # AUROC
+        self.log("val_aucroc", self.metrics["auroc"].compute(), on_epoch=True, prog_bar=True, logger=True)
+        self.metrics.reset()
+        # Brier / ECE — computed once over all batches
+        y_hat_all = np.concatenate(self._val_y_hat)
+        y_all = np.concatenate(self._val_y)
+        self.log('val_brier', brier_score_loss(y_all, y_hat_all), on_epoch=True, prog_bar=True, logger=True)
+        self.log('val_ece', expected_calibration_error(y_all, y_hat_all), on_epoch=True, prog_bar=True, logger=True)
+        self._val_y_hat.clear()
+        self._val_y.clear()
+    
+    def test_step(self, batch, batch_idx):
+        return self.validation_step(batch, batch_idx)
+    
+    def on_test_batch_end(self, outputs: torch.Tensor | Mapping[str, Any] | None, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+        y_hat = outputs["y_hat"]
+        y = outputs["y"]
+        self.log('test_loss', outputs["loss"], on_step=False, on_epoch=True, prog_bar=True, logger=True)
+        self.metrics['auroc'].update(y_hat, y)
+        # Accumulate for epoch-level Brier/ECE (not computed per batch)
+        self._test_y_hat.append(torch.sigmoid(y_hat).detach().cpu().numpy().flatten())
+        self._test_y.append(y.detach().cpu().numpy().flatten())
+
+    def on_test_epoch_end(self) -> None:
+        self.log("test_aucroc", self.metrics["auroc"].compute(), on_epoch=True, prog_bar=True, logger=True)
+        self.metrics.reset()
+        y_hat_all = np.concatenate(self._test_y_hat)
+        y_all = np.concatenate(self._test_y)
+        self.log('test_brier', brier_score_loss(y_all, y_hat_all), on_epoch=True, prog_bar=True, logger=True)
+        self.log('test_ece', expected_calibration_error(y_all, y_hat_all), on_epoch=True, prog_bar=True, logger=True)
+        self._test_y_hat.clear()
+        self._test_y.clear()
+
+class CaloINNBaseCLF(CaloINNCLF):
+    """CaloINN with classifier density ratio correction.
+
+    This class extends CaloINNLightningModule to include a classifier
+    for density ratio estimation, enabling Acceptance-Rejection sampling.
+    The class loads a pre-trained CaloINN model and adds a Multi-Layer Perceptron (MLP)
+    """
+
+    
+    def get_input_from_batch(self, batch):
+
+        x_truth, c = batch
+        x_gen = self.generator.conditional_generate(c, measure_gen_time=False).squeeze(1)
+
+        y_truth = torch.ones(x_truth.shape[0], 1, device=x_truth.device)
+        y_gen = torch.zeros(x_gen.shape[0], 1, device=x_gen.device)
+
+        X = torch.cat([x_truth, x_gen], dim=0)
+        y = torch.cat([y_truth, y_gen], dim=0)
+        c = c.repeat(2, 1)
+
+        X_input = self.convert_func(X, c)
+
+        return X_input, y

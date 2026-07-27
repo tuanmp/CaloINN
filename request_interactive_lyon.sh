@@ -1,0 +1,1 @@
+srun -p gpu_v100_interactive -t 0-08:00 --gpus 2 --mem 32G --cpus-per-gpu 5  --pty bash -i 

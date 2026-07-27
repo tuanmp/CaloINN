@@ -2,12 +2,12 @@ from typing import Any, Mapping
 
 from lightning import LightningModule
 import torch.nn.functional as F
-from module.classifier import MLP
+from clf.classifier import MLP
 import torch
 import numpy as np
 from sklearn.metrics import brier_score_loss
 from torchmetrics import AUROC, MetricCollection
-from calibration import expected_calibration_error
+from mcmc.calibration import expected_calibration_error
 
 
 class BaseModel(LightningModule):

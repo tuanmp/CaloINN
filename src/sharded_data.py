@@ -372,7 +372,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
         source = _RawHDF5Source(data_path)
         try:
             n_samples = len(source)
-            chunk_size = 100000
+            chunk_size = self.cache_chunk
             all_valid = []
 
             pbar = tqdm.tqdm(
@@ -405,6 +405,7 @@ class ShardedCaloINNDataModule(LightningDataModule):
             pbar.close()
             valid = np.concatenate(all_valid)
             np.save(cache_path, valid)
+            print(f"✅ {len(valid)} filtered indices cached to {cache_path}")
             return valid
         finally:
             source.close()
