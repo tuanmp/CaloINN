@@ -1,1 +1,1 @@
-srun --nodes=1 --time=04:00:00 -p gpu --gres=gpu:1 --pty --tmp 5G --cpus-per-gpu 2 --mem 32G /bin/bash
+srun --nodes=1 --time=04:00:00 -p gpu --gres=gpu:1 --pty --tmp 20G --cpus-per-gpu 2 --mem 32G bash -i

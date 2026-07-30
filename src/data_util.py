@@ -10,7 +10,6 @@ import torch
 import caloch_eval.HighLevelFeatures as HLF
 from caloch_eval.XMLHandler import XMLHandler
 
-
 # ═══════════════════════════════════════════════════════════════════════
 #  Truth format metadata
 # ═══════════════════════════════════════════════════════════════════════
@@ -217,6 +216,14 @@ def save_data_with_format(
         handle.create_dataset(truth_format.energy_key, data=energy_out)
         handle.create_dataset(dataset_name, data=showers_mev)
 
+def add_noise(x: torch.Tensor | np.ndarray, noise_width: float=1.0e-6):
+    """Adds a small noise to the input data to prevent numerical issues"""
+    if noise_width <= 0.0:
+        return x
+    x = np.copy(x)
+    add_noise = np.random.rand(*x.shape)*noise_width if isinstance(x, np.ndarray) else torch.rand_like(x)*noise_width
+    x += add_noise
+    return x
 
 def get_energy_dims(x, c, layer_boundaries, eps=1.e-10):
     """Appends the extra dimensions and the layer energies to the conditions

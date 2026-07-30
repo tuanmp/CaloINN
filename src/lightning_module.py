@@ -1,26 +1,28 @@
 import os
 import time
+from collections.abc import Mapping
+from functools import partial
+from typing import Any, Dict, Optional, Tuple, Union
 
 import h5py
 import lightning as pl
 import numpy as np
 import torch
-from lightning_fabric.utilities import rank_zero_info
+from lightning.pytorch.utilities.rank_zero import rank_zero_info
+from sklearn.metrics import brier_score_loss
+from torchmetrics import AUROC, MetricCollection
 
 import data_util
 import torch_postprocess
+from clf.classifier import MLP
+from mcmc.calibration import expected_calibration_error
+from mcmc.convert import (
+    cinn_sample_to_classifier_input,
+    cinn_sample_to_classifier_input_torch,
+)
 from model import CINN
 from training_diagnostics import TrainingDiagnostics
 
-from clf.classifier import MLP
-import torch_postprocess
-from mcmc.convert import cinn_sample_to_classifier_input, cinn_sample_to_classifier_input_torch
-from sklearn.metrics import brier_score_loss
-from torchmetrics import AUROC, MetricCollection
-from mcmc.calibration import expected_calibration_error
-from collections.abc import Mapping
-from typing import Any, Optional, Union, Tuple, Dict
-from functools import partial
 
 class _SkipLastTwoScheduler:
     """Wrapper that skips the last 2 scheduler.step() calls, matching legacy.
@@ -153,6 +155,8 @@ class CaloINNLightningModule(pl.LightningModule):
 
         self.register_buffer("q", q)
 
+        rank_zero_info(f"Initializing CINN with \nx={sample_x}, \nc={sample_c}")
+
         self.model = CINN(self.cinn_params, sample_x, sample_c)
 
     def load_init_tensors(self):
@@ -166,9 +170,9 @@ class CaloINNLightningModule(pl.LightningModule):
             is_lemurs = "incident_energy" in f
 
         if is_lemurs:
+            from caloch_eval.XMLHandler import XMLHandler
             from src.lemurs_data import LEMURSHDF5Source
             from src.sharded_data import _build_data_dict
-            from caloch_eval.XMLHandler import XMLHandler
 
             xml_handler = XMLHandler(
                 particle_name=self.xml_ptype,
@@ -205,6 +209,8 @@ class CaloINNLightningModule(pl.LightningModule):
             rew=ds_params.get("pt_rew", 1.0),
             dep_cut=ds_params.get("dep_cut", 1.0e10),
         )
+
+        x = data_util.add_noise(x, self.width_noise)
 
         dtype = torch.get_default_dtype()
         x = torch.tensor(x, dtype=dtype)
@@ -745,6 +751,7 @@ class CaloINNLightningModule(pl.LightningModule):
         incident_energies : np.ndarray  shape (N, 1), in MeV
         """
         import h5py
+
         from streaming_data import PreprocessedStreamingDataset
 
         self.model.eval()
