@@ -222,6 +222,7 @@ class LEMURSDataModule(ShardedCaloINNDataModule):
         cache_path = f"{data_path}.filter_{param_hash}.npy"
 
         if os.path.exists(cache_path):
+            print(f"📦 Loading cached filter indices from {cache_path}...")
             return np.load(cache_path)
 
         source = LEMURSHDF5Source(data_path)
@@ -259,6 +260,7 @@ class LEMURSDataModule(ShardedCaloINNDataModule):
 
             pbar.close()
             valid = np.concatenate(all_valid)
+            print(f" Number of valid samples: {len(valid)} / {n_samples}")
             np.save(cache_path, valid)
             return valid
         finally:
