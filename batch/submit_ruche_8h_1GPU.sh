@@ -13,8 +13,11 @@
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=40G
-#SBATCH --time=08:00:00
+#SBATCH --time=16:00:00
+#SBATCH --requeue
+#SBATCH --signal=SIGUSR1@240
 #SBATCH --partition=gpu
+#SBATCH --tmp=20G
 
 export HDF5_USE_FILE_LOCKING=FALSE
 export SLURM_CPU_BIND="cores"
@@ -27,3 +30,5 @@ ARG=$@
 
 echo "Starting job: $ARG"
 srun $ARG
+
+wait

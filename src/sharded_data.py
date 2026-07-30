@@ -208,9 +208,9 @@ class _CaloINNDataset(Dataset):
                     rng = np.random.RandomState(int(h5idx))
                     noise[i] = rng.uniform(0, 1, x.shape[1:]).astype(np.float32)
                 noise *= self.width_noise
+                x += noise
             else:
-                noise = np.random.uniform(0, 1, x.shape).astype(np.float32) * self.width_noise
-            x = x + noise
+                x = data_util.add_noise(x, self.width_noise)  # vectorised random noise
 
         return x, c
 

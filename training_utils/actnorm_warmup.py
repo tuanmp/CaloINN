@@ -73,8 +73,9 @@ class ActNormWarmupCallback(L.Callback):
         x = x.to(pl_module.device)
         c = c.to(pl_module.device)
 
-        if hasattr(pl_module, "_apply_input_noise"):
-            x = pl_module._apply_input_noise(x)
+        rank_zero_info(f"[ActNormWarmup] Running warmup with {n_pending} pending ActNorm layers, "
+            f"x={x}\nc={c}\n"
+        )
 
         cinn = pl_module.model
         was_training = cinn.training
