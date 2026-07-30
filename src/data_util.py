@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 import caloch_eval.HighLevelFeatures as HLF
-from caloch_eval.XMLHandler import XMLHandler
+from XMLHandler import XMLHandler
 
 
 # ═══════════════════════════════════════════════════════════════════════

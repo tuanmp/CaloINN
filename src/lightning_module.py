@@ -1066,19 +1066,29 @@ class CaloINNBaseCLF(CaloINNCLF):
     The class loads a pre-trained CaloINN model and adds a Multi-Layer Perceptron (MLP)
     """
 
-    
+    @property
+    def q0(self):
+        return torch.distributions.Normal(0, 1)
+
+    @torch.inference_mode()
+    def _get_latent(self, x, c):
+        z = self.generator.model(x, c, rev=False)[0]
+        return z
+
     def get_input_from_batch(self, batch):
 
         x_truth, c = batch
-        x_gen = self.generator.conditional_generate(c, measure_gen_time=False).squeeze(1)
 
-        y_truth = torch.ones(x_truth.shape[0], 1, device=x_truth.device)
-        y_gen = torch.zeros(x_gen.shape[0], 1, device=x_gen.device)
+        z_truth = self._get_latent(x_truth, c)
+        z_gen = self.q0.sample(z_truth.shape).to(z_truth.device)
 
-        X = torch.cat([x_truth, x_gen], dim=0)
+        y_truth = torch.ones(z_truth.shape[0], 1, device=z_truth.device)
+        y_gen = torch.zeros(z_gen.shape[0], 1, device=z_gen.device)
+
+        X = torch.cat([z_truth, z_gen], dim=0)
         y = torch.cat([y_truth, y_gen], dim=0)
         c = c.repeat(2, 1)
 
-        X_input = self.convert_func(X, c)
+        X_input = torch.cat([X, c], dim=1)
 
         return X_input, y
