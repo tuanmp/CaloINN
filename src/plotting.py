@@ -1,40 +1,76 @@
-import os
 import argparse
-
-import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.font_manager import FontProperties
 import math
-import torch
+import os
 
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import torch
 from matplotlib import cm
-# from matplotlib.transforms import Bbox
+from matplotlib.font_manager import FontProperties
+from scipy import stats
 
+# from matplotlib.transforms import Bbox
 import data_util
 from caloch_eval.calc_obs import *
 from caloch_eval.evaluate_plotting_helper import *
 
-plt.rcParams['font.family'] = 'Times New Roman'
+# plt.rcParams['font.family'] = 'Times New Roman'
 plt.rcParams['mathtext.default'] = 'rm'
-plt.rcParams['text.usetex'] = True
+plt.rcParams['text.usetex'] = False
+plt.style.use('seaborn-v0_8-paper')  # 'seaborn-v0_8-paper' 'seaborn-v0_8-ticks' 'seaborn-v0_8-whitegrid'
 
 labelfont = FontProperties()
 labelfont.set_family('serif')
-labelfont.set_name('Times New Roman')
+# labelfont.set_name('Times New Roman')
 labelfont.set_size(20)
 
 axislabelfont = FontProperties()
 axislabelfont.set_family('serif')
-axislabelfont.set_name('Times New Roman')
+# axislabelfont.set_name('Times New Roman')
 axislabelfont.set_size(20)
 
 tickfont = FontProperties()
 tickfont.set_family('serif')
-tickfont.set_name('Times New Roman')
+# tickfont.set_name('Times New Roman')
 tickfont.set_size(20)
 
+def plot_latent_histo(
+    latent_array: np.ndarray,
+    save_path: str,
+    latent_variables: list[int],
+    bins: int = 100,
+    xrange: tuple = (-4, 4)
+):
+    """
+    Plots a histogram of the latent array and saves it to the specified path.
 
+    Args:
+        latent_array (np.ndarray): The array of latent variables.
+        save_path (str): The path where the plot will be saved.
+        bins (int, optional): Number of bins for the histogram. Defaults to 100.
+        xrange (tuple, optional): The range of values for the histogram. Defaults to (-4, 4).
+    """
+    assert latent_array.shape[1] == len(latent_variables), "The number of latent variables must match the second dimension of the latent array."
+    n_latent = latent_array.shape[1]
+    fig, ax = plt.subplots(n_latent, 1, figsize=(6, 2 * n_latent))
+    xarray = np.linspace(xrange[0], xrange[1], 100)
+    yarray = stats.norm.pdf(xarray)
+    for i, latent_var in enumerate(latent_variables):
+        ax[i].hist(latent_array[:, i], 
+                    bins=100, 
+                    range=xrange, 
+                    density=True, 
+                    alpha=0.5,
+                    color="blue",
+                    label=rf"$z_{latent_var}$"
+        )                
+        ax[i].plot(xarray, yarray, color="red", lw=2, label="Standard Normal PDF")
+        ax[i].set_title(f"Latent dimension {latent_var}")
+        ax[i].set_xlim(xrange)
+        ax[i].legend()
+    fig.tight_layout()
+    plt.savefig(save_path, bbox_inches='tight')
 
 def plot_average_table(data, save_file):
     

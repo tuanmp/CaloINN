@@ -1,10 +1,11 @@
 import os
 from datetime import datetime
+from pathlib import Path
 
 import lightning as L
 from lightning.pytorch.utilities.rank_zero import rank_zero_info
 from lightning.pytorch.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
-from pathlib import Path
+
 
 def get_default_root_dir(stage_dir):
     if (
@@ -50,6 +51,8 @@ class Trainer(L.Trainer):
         )
 
         self.run_name = run_name
+
+        rank_zero_info(f" 🔄 Logging to {self.log_dir}")
     
     def fit(self, model: L.LightningModule, train_dataloaders: L.LightningDataModule | None = None, val_dataloaders: None = None, datamodule: L.LightningDataModule | None = None, ckpt_path: str | Path | None = None, weights_only: bool | None = None) -> None:
         # if the job is requeued, change the checkpoint priority from the provided ckpt if any to the last HPC checkpoint in the default_root_dir
