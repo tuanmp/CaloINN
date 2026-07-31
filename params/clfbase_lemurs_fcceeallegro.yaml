@@ -1,12 +1,16 @@
 
 trainer:
   stage_dir: /workdir/phamt/stage_dir/results
-  run_name: lemurs_fcceeallegro_baseclf
+  run_name: lemurs_fcceeallegro_clf
   accelerator: auto
   devices: 1
   max_epochs: 500
   precision: 32
   logger:
+    - class_path: lightning.pytorch.loggers.CSVLogger
+      init_args:
+        save_dir: /workdir/phamt/stage_dir/csv_logs
+        name: lemurs_fcceeallegro_clf
     - class_path: training_utils.wandb.WandbLogger
       init_args:
         stage_dir: /workdir/phamt/stage_dir/results
@@ -15,18 +19,13 @@ trainer:
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        monitor: val_loss
+        monitor: val_brier
         mode: min
         save_top_k: 3
-        filename: "{epoch}-{val_loss:.2f}"
+        filename: "{epoch}-{val_brier:.2f}"
         save_last: true
         save_on_exception: true
         verbose: true
-    - class_path: lightning.pytorch.callbacks.ModelCheckpoint
-      init_args:
-        every_n_epochs: 50
-        save_top_k: -1
-        filename: "epoch{epoch:04d}"
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
       init_args:
         logging_interval: epoch
@@ -51,8 +50,8 @@ data:
     num_workers: 2
     predict_batch_size: 1000
     eval_dataset: "1-photons"
-    cache_mode: none
-    cache_dir: /workdir/phamt/lemurs/fcceeallegro_cache
+    cache_mode: memmap
+    cache_dir: /workdir/phamt/lemurs/fcceeallegro_cache_clf
     cache_chunk: 10000
 
 model: 
@@ -65,10 +64,12 @@ model:
     output_dim: 1
     dropout: 0.5
     activation: relu
-    generator_ckpt_path: run/epoch=17-val_loss=9378.26.ckpt
+    generator_ckpt_path: notebooks/epoch=19-val_loss=7784.51.ckpt
     # optimizer and learning scheduler
     lr: 0.0001
     step_size: 10
     gamma: 0.95
     amsgrad: true
-    
+    kw_overrides: 
+      setup_data_sample_path: /workdir/phamt/lemurs/fcceeallegro/LEMURS_FCCeeALLEGRO_training.h5
+

@@ -1,12 +1,13 @@
 # Callback to run a pretraining validation pass
 
+import os
+
 import torch
 from lightning import LightningModule, Trainer
 from lightning.pytorch import Callback
 from lightning.pytorch.utilities import rank_zero_info
-from tqdm import tqdm
-
 from plotting import plot_latent_histo
+from tqdm import tqdm
 
 
 class PretrainingValidationCallback(Callback):

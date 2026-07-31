@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from functools import partial
+from typing import Any, Optional, Union
 
 import lightning as pl
 import numpy as np
@@ -87,6 +89,7 @@ class CaloINNCLF(pl.LightningModule):
         step_size: int=10,
         gamma: float=0.95,
         amsgrad: bool=True,
+        kw_overrides: Optional[dict]={},
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -96,7 +99,7 @@ class CaloINNCLF(pl.LightningModule):
         # ckpt = torch.load(generator_ckpt_path, map_location="cpu")
         # self.generator = CaloINNLightningModule(**ckpt["hyper_parameters"])
         # self.generator.load_state_dict(ckpt["state_dict"])
-        self.generator = CaloINNLightningModule.load_from_checkpoint(generator_ckpt_path)
+        self.generator = CaloINNLightningModule.load_from_checkpoint(generator_ckpt_path, **kw_overrides)
         rank_zero_info(f"   ✅ Generator loaded. Model has {sum(p.numel() for p in self.generator.parameters())} parameters.")
         self.net = MLP(
             hidden_dim=hidden_dim,

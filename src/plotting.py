@@ -53,7 +53,7 @@ def plot_latent_histo(
     """
     assert latent_array.shape[1] == len(latent_variables), "The number of latent variables must match the second dimension of the latent array."
     n_latent = latent_array.shape[1]
-    fig, ax = plt.subplots(n_latent, 1, figsize=(6, 2 * n_latent))
+    fig, ax = plt.subplots(n_latent, 1, figsize=(6, 3 * n_latent))
     xarray = np.linspace(xrange[0], xrange[1], 100)
     yarray = stats.norm.pdf(xarray)
     for i, latent_var in enumerate(latent_variables):
@@ -63,7 +63,7 @@ def plot_latent_histo(
                     density=True, 
                     alpha=0.5,
                     color="blue",
-                    label=rf"$z_{latent_var}$"
+                    label=fr"$z_{{{latent_var}}}$"
         )                
         ax[i].plot(xarray, yarray, color="red", lw=2, label="Standard Normal PDF")
         ax[i].set_title(f"Latent dimension {latent_var}")

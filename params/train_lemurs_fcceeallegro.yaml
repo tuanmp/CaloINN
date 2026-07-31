@@ -5,18 +5,23 @@
 # Dims: 6480 cells + 45 layers = 6525
 
 trainer:
-  stage_dir: /pbs/throng/ijclab/tpham/stage_dir/results
+  stage_dir: /workdir/phamt/stage_dir/results
   run_name: lemurs_fcceeallegro_full
   accelerator: auto
   devices: 1
   max_epochs: 500
   precision: 32
+  num_sanity_val_steps: 0
   logger:
+    - class_path: lightning.pytorch.loggers.CSVLogger
+      init_args:
+        save_dir: /workdir/phamt/stage_dir/csv_logs
+        name: lemurs_fcceeallegro_full
     - class_path: training_utils.wandb.WandbLogger
       init_args:
-        stage_dir: /pbs/throng/ijclab/tpham/stage_dir/results
+        stage_dir: /workdir/phamt/stage_dir/results
         project: caloinn_lightning
-        group: lemurs_fcceeallegro
+        group: lemurs_fcceeallegro_debug
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
@@ -42,35 +47,37 @@ trainer:
         deterministic_seed: 2026
         disable_batchnorm_updates: true
         calibration_source: module_cache
+    - class_path: training_utils.pretraining_val.PretrainingValidationCallback
+
 
 data:
   class_path: src.lemurs_data.LEMURSDataModule
   init_args:
-    data_path: /pbs/throng/ijclab/tpham/lemurs/fcceeallegro/LEMURS_FCCeeALLEGRO_training.h5
-    val_data_path: /pbs/throng/ijclab/tpham/lemurs/fcceeallegro/testing/LEMURS_FCCeeALLEGRO_gamma_100kEvents_1GeV100GeV_GPSflat_part10.h5
+    data_path: /workdir/phamt/lemurs/fcceeallegro/LEMURS_FCCeeALLEGRO_training.h5
+    val_data_path: /workdir/phamt/lemurs/fcceeallegro/testing/LEMURS_FCCeeALLEGRO_gamma_100kEvents_1GeV100GeV_GPSflat_part10.h5
     batch_size: 1024
     xml_path: binning_lemurs_fcceeallegro.xml
     xml_ptype: photon
     val_frac: 0.01
     eps: 1.0e-10
-    u0up_cut: 1e9
+    u0up_cut: 1000000000
     u0low_cut: 0.0
     rew: 1.0
-    dep_cut: 1.0e10
+    dep_cut: 10000000000
     width_noise: 5.0e-6
     fixed_noise: false
     shuffle: true
-    num_workers: 10
+    num_workers: 2
     predict_batch_size: 1000
     eval_dataset: "1-photons"
-    cache_mode: memmap
-    cache_dir: /pbs/throng/ijclab/tpham/lemurs/fcceeallegro_cache
+    cache_mode: none
+    cache_dir: /workdir/phamt/lemurs/fcceeallegro_cache
     cache_chunk: 10000
 
 model:
   class_path: lightning_module.CaloINNLightningModule
   init_args:
-    setup_data_sample_path: /pbs/throng/ijclab/tpham/lemurs/fcceeallegro/LEMURS_FCCeeALLEGRO_training.h5
+    setup_data_sample_path: /workdir/phamt/lemurs/fcceeallegro/LEMURS_FCCeeALLEGRO_training.h5
     max_init_samples: 20000
     shuffle_init_batch: false
     width_noise: 5.0e-6
@@ -78,6 +85,7 @@ model:
     xml_path: binning_lemurs_fcceeallegro.xml
     xml_ptype: photon
     enable_diagnostics: false
+    inspect_dimensions: [0, 5, 10, 100, 400, 1000, 3000, 5000, 6000]
     dataset_params:
       xml_ptype: photon
       eps: 1.0e-10

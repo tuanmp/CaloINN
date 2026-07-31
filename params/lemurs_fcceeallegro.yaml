@@ -11,12 +11,12 @@ trainer:
   devices: 1
   max_epochs: 500
   precision: 32
-  logger:
-    - class_path: training_utils.wandb.WandbLogger
-      init_args:
-        stage_dir: /workdir/phamt/stage_dir/results
-        project: caloinn_lightning
-        group: lemurs_fcceeallegro
+  # logger:
+  #   - class_path: training_utils.wandb.WandbLogger
+  #     init_args:
+  #       stage_dir: /workdir/phamt/stage_dir/results
+  #       project: caloinn_lightning
+  #       group: lemurs_fcceeallegro
   callbacks:
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
