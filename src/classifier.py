@@ -174,6 +174,20 @@ class CaloINNCLF(pl.LightningModule):
     def criterion(self, logits, y):
         return torch.nn.functional.binary_cross_entropy_with_logits(logits, y)
     
+    def estimate_density_ratio(self, x, c):
+        """Estimate the density ratio p(x|c) / q(x|c) using the trained classifier.
+
+        Parameters
+        ----------
+        x : torch.Tensor shape (N, D)
+            Samples from the proposal distribution q(x|c).
+        c : torch.Tensor shape (N, C)
+            Conditioning variables corresponding to each sample x.
+        """
+        x_clf = self.convert_func(x, c)
+        logits = self.forward(x_clf).squeeze(-1)  # shape (N,)
+        return torch.exp(logits)  # r(x,c) = p(x|c)/q(x|c) = exp(logit)
+    
     def training_step(self, batch, batch_idx):
         X_input, y = self.get_input_from_batch(batch)
         logits = self(X_input)
@@ -259,9 +273,9 @@ class CaloINNBaseCLF(CaloINNCLF):
         x_truth, c = batch
 
         z_truth = self._get_latent(x_truth, c)
-        z_gen = self.q0.sample(z_truth.shape).to(z_truth.device)
-
         y_truth = torch.ones(z_truth.shape[0], 1, device=z_truth.device)
+
+        z_gen = self.q0.sample(z_truth.shape).to(z_truth.device)
         y_gen = torch.zeros(z_gen.shape[0], 1, device=z_gen.device)
 
         X = torch.cat([z_truth, z_gen], dim=0)
@@ -271,3 +285,135 @@ class CaloINNBaseCLF(CaloINNCLF):
         X_input = torch.cat([X, c], dim=1)
 
         return X_input, y
+    
+    def estimate_density_ratio(self, z, c):
+        """Estimate the density ratio p(z|c) / q(z) using the trained classifier.
+
+        Parameters
+        ----------
+        z : torch.Tensor shape (N, D)
+            Samples from the proposal distribution q(z).
+        c : torch.Tensor shape (N, C)
+            Conditioning variables corresponding to each sample z.
+        """
+        logits = self(torch.cat([z, c], dim=1))
+        return torch.exp(logits)  # r(z,c) = p(z|c)/q(z) = exp(logit)
+    
+    def estimate_log_density(self, z, c):
+        """Estimate the log density p_theta(z) = q0 * (p_theta / q0) using the trained classifier.
+
+        Parameters
+        ----------
+        z : torch.Tensor shape (N, D)
+            Samples from the proposal distribution q(z).
+        c : torch.Tensor shape (N, C)
+            Conditioning variables corresponding to each sample z.
+        """
+        # the logits is the log density ratio 
+        logits = self(torch.cat([z, c], dim=1))
+        return torch.log(self.q0.log_prob(z).sum(dim=1)) + logits.squeeze
+    
+    def _turn_off_grad(self):
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def estimate_log_density_gradient(self, z, c):
+        """Estimate the gradient of the log density p_theta(z) = q0 * (p_theta / q0) using the trained classifier.
+
+        Parameters
+        ----------
+        z : torch.Tensor shape (N, D)
+            Samples from the proposal distribution q(z).
+        c : torch.Tensor shape (N, C)
+            Conditioning variables corresponding to each sample z.
+        """
+        z.requires_grad_(True)
+        self._turn_off_grad()
+        log_density = self.estimate_log_density(z, c)
+        log_density.sum().backward()
+        return z.grad
+
+    
+class NoiseContrastiveDensityRatioEstimator(CaloINNBaseCLF):
+    """CaloINN with classifier density ratio correction.
+
+    """
+
+    def __init__(self, 
+        hidden_dim: int=256,
+        num_layers: int=4,
+        batch_norm: bool=False,
+        layer_norm: bool=True,
+        output_dim: int=1,
+        dropout: float=0.,
+        noise_amplifier: int=1,
+        activation: str="relu",
+        generator_ckpt_path: str=None,
+        voxel_energy_cutoff: float=None,
+        log_transform: bool=False,
+        lr: float=1e-3,
+        step_size: int=10,
+        gamma: float=0.95,
+        amsgrad: bool=True,
+        kw_overrides: Optional[dict]={},
+        **kwargs
+    ):
+        self.noise_amplifier = noise_amplifier
+
+        super().__init__(
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            batch_norm=batch_norm,
+            layer_norm=layer_norm,
+            output_dim=output_dim,
+            dropout=dropout,
+            activation=activation,
+            generator_ckpt_path=generator_ckpt_path,
+            voxel_energy_cutoff=voxel_energy_cutoff,
+            log_transform=log_transform,
+            lr=lr,
+            step_size=step_size,
+            gamma=gamma,
+            amsgrad=amsgrad,
+            kw_overrides=kw_overrides,
+            **kwargs
+        )
+
+    def get_input_from_batch(self, batch):
+        
+        x_truth, c = batch
+
+        z_truth = self._get_latent(x_truth, c)
+        y_truth = torch.zeros(z_truth.shape[0], 1, device=z_truth.device)
+        
+        # amplify the number of noise samples by self.noise_amplifier
+        z_gen = self.q0.sample(z_truth.shape[0] * self.noise_amplifier, *z_truth.shape[1:]).to(z_truth.device) 
+        y_gen = torch.zeros(z_gen.shape[0], 1, device=z_gen.device)
+
+        X = torch.cat([z_truth, z_gen], dim=0)
+        y = torch.cat([y_truth, y_gen], dim=0)
+        c = c.repeat(2, 1)
+
+        X_input = torch.cat([X, c], dim=1)
+
+        return X_input, y
+
+    def estimate_density_ratio(self, z, c):
+        """Estimate the density ratio p(z|c) / q(z) using the trained classifier."""
+
+        logits = self(torch.cat([z, c], dim=1))
+        return self.noise_amplifier * torch.exp(logits)  # r(z,c) = p(z|c)/q(z) = M * exp(logit), where M is the noise amplifier
+
+    def estimate_log_density(self, z, c):
+        """Estimate the log density p_theta(z) = q0 * (p_theta / q0) using the trained classifier.
+
+        Parameters
+        ----------
+        z : torch.Tensor shape (N, D)
+            Samples from the proposal distribution q(z).
+        c : torch.Tensor shape (N, C)
+            Conditioning variables corresponding to each sample z.
+        """
+        # the logits is the log density ratio 
+        logits = self(torch.cat([z, c], dim=1))
+        return torch.log(self.q0.log_prob(z).sum(dim=1)) + torch.log(self.noise_amplifier) + logits.squeeze
